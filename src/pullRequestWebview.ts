@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { PullRequest, PipelineRun, AzureDevOpsClient } from './azureDevOpsClient';
+import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff } from './azureDevOpsClient';
 
 export class PullRequestWebviewPanel {
     private static currentPanel: PullRequestWebviewPanel | undefined;
@@ -100,9 +100,12 @@ export class PullRequestWebviewPanel {
         this.panel.title = `PR #${this.pullRequest.pullRequestId}`;
 
         try {
-            // Fetch the latest pipelines
-            const pipelines = await this.client.getPullRequestPipelines(this.pullRequest.pullRequestId);
-            webview.html = this.getHtmlForWebview(webview, this.pullRequest, pipelines);
+            // Fetch the latest pipelines and diffs
+            const [pipelines, diffs] = await Promise.all([
+                this.client.getPullRequestPipelines(this.pullRequest.pullRequestId),
+                this.client.getPullRequestDiffs(this.pullRequest.pullRequestId)
+            ]);
+            webview.html = this.getHtmlForWebview(webview, this.pullRequest, pipelines, diffs);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             webview.html = this.getErrorHtml(errorMessage);
@@ -124,7 +127,7 @@ export class PullRequestWebviewPanel {
         </html>`;
     }
 
-    private getHtmlForWebview(webview: vscode.Webview, pr: PullRequest, pipelines: PipelineRun[]): string {
+    private getHtmlForWebview(webview: vscode.Webview, pr: PullRequest, pipelines: PipelineRun[], diffs: FileDiff[]): string {
         const sourceBranch = pr.sourceRefName.replace('refs/heads/', '');
         const targetBranch = pr.targetRefName.replace('refs/heads/', '');
 
@@ -259,6 +262,141 @@ export class PullRequestWebviewPanel {
                     color: var(--vscode-badge-foreground);
                     border-radius: 4px;
                 }
+                .changes {
+                    margin-top: 30px;
+                }
+                .diff-file {
+                    margin: 20px 0;
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 6px;
+                    overflow: hidden;
+                }
+                .diff-file-header {
+                    padding: 12px 15px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    border-bottom: 1px solid var(--vscode-panel-border);
+                }
+                .diff-file-header.add {
+                    border-left: 4px solid var(--vscode-charts-green);
+                }
+                .diff-file-header.edit {
+                    border-left: 4px solid var(--vscode-charts-blue);
+                }
+                .diff-file-header.delete {
+                    border-left: 4px solid var(--vscode-charts-red);
+                }
+                .change-type {
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    text-transform: uppercase;
+                    min-width: 60px;
+                    text-align: center;
+                }
+                .change-type.add {
+                    background-color: var(--vscode-charts-green);
+                    color: white;
+                }
+                .change-type.edit {
+                    background-color: var(--vscode-charts-blue);
+                    color: white;
+                }
+                .change-type.delete {
+                    background-color: var(--vscode-charts-red);
+                    color: white;
+                }
+                .change-type.rename {
+                    background-color: var(--vscode-charts-yellow);
+                    color: black;
+                }
+                .change-path {
+                    font-family: monospace;
+                    font-size: 13px;
+                    flex: 1;
+                    word-break: break-all;
+                }
+                .diff-content {
+                    background-color: var(--vscode-editor-background);
+                    overflow-x: auto;
+                }
+                .diff-block {
+                    margin: 0;
+                }
+                .diff-row {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    border-bottom: 1px solid var(--vscode-panel-border);
+                }
+                .diff-side {
+                    display: flex;
+                    min-height: 24px;
+                }
+                .diff-side.left {
+                    border-right: 1px solid var(--vscode-panel-border);
+                }
+                .diff-line-number {
+                    min-width: 50px;
+                    padding: 2px 10px;
+                    color: var(--vscode-descriptionForeground);
+                    text-align: right;
+                    user-select: none;
+                    opacity: 0.6;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
+                }
+                .diff-line-content {
+                    flex: 1;
+                    white-space: pre;
+                    padding: 2px 10px;
+                    overflow-x: auto;
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
+                }
+                .diff-side.deleted {
+                    background-color: rgba(229, 83, 75, 0.15);
+                }
+                .diff-side.deleted .diff-line-number {
+                    color: var(--vscode-charts-red);
+                    opacity: 1;
+                    background-color: rgba(229, 83, 75, 0.2);
+                }
+                .diff-side.added {
+                    background-color: rgba(46, 160, 67, 0.15);
+                }
+                .diff-side.added .diff-line-number {
+                    color: var(--vscode-charts-green);
+                    opacity: 1;
+                    background-color: rgba(46, 160, 67, 0.2);
+                }
+                .diff-side.unchanged {
+                    background-color: transparent;
+                }
+                .diff-side.empty {
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                }
+                .diff-expand {
+                    padding: 8px;
+                    text-align: center;
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                    font-size: 12px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    border-top: 1px solid var(--vscode-panel-border);
+                    border-bottom: 1px solid var(--vscode-panel-border);
+                }
+                .no-changes {
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                    padding: 20px;
+                    text-align: center;
+                }
             </style>
         </head>
         <body>
@@ -291,6 +429,12 @@ export class PullRequestWebviewPanel {
             <h2>Description</h2>
             <div class="description">${this.escapeHtml(pr.description)}</div>
             ` : ''}
+
+            <div class="changes">
+                <h2>File Changes (${diffs.length})</h2>
+                ${diffs.length > 0 ? diffs.map(diff => this.getDiffHtml(diff)).join('') :
+                '<div class="no-changes">No file changes found for this pull request</div>'}
+            </div>
 
             <div class="pipelines">
                 <h2>Pipelines (${pipelines.length})</h2>
@@ -325,6 +469,117 @@ export class PullRequestWebviewPanel {
             </div>
             <a href="${pipeline.url}" class="button">View Pipeline</a>
         </div>`;
+    }
+
+    private getDiffHtml(diff: FileDiff): string {
+        const changeType = diff.changeType.toLowerCase();
+        let changeTypeClass = changeType;
+        let changeTypeLabel = changeType;
+
+        // Map Azure DevOps change types to our display types
+        if (changeType === 'add') {
+            changeTypeClass = 'add';
+            changeTypeLabel = 'add';
+        } else if (changeType === 'edit') {
+            changeTypeClass = 'edit';
+            changeTypeLabel = 'edit';
+        } else if (changeType === 'delete') {
+            changeTypeClass = 'delete';
+            changeTypeLabel = 'delete';
+        } else if (changeType === 'rename') {
+            changeTypeClass = 'rename';
+            changeTypeLabel = 'rename';
+        }
+
+        // Generate diff blocks HTML in side-by-side view
+        let diffBlocksHtml = '';
+        if (diff.blocks && diff.blocks.length > 0) {
+            diffBlocksHtml = diff.blocks.map(block => {
+                // Group lines for side-by-side display
+                const rows = this.generateSideBySideRows(block.lines);
+
+                const rowsHtml = rows.map(row => {
+                    return `<div class="diff-row">
+                        <div class="diff-side left ${row.leftType}">
+                            <span class="diff-line-number">${row.leftNumber || ''}</span>
+                            <span class="diff-line-content">${this.escapeHtml(row.leftContent || '')}</span>
+                        </div>
+                        <div class="diff-side right ${row.rightType}">
+                            <span class="diff-line-number">${row.rightNumber || ''}</span>
+                            <span class="diff-line-content">${this.escapeHtml(row.rightContent || '')}</span>
+                        </div>
+                    </div>`;
+                }).join('');
+
+                return `<div class="diff-block">${rowsHtml}</div>`;
+            }).join('');
+        } else {
+            diffBlocksHtml = '<div class="diff-expand">No line changes available</div>';
+        }
+
+        return `
+        <div class="diff-file">
+            <div class="diff-file-header ${changeTypeClass}">
+                <span class="change-type ${changeTypeClass}">${changeTypeLabel}</span>
+                <span class="change-path">${this.escapeHtml(diff.path)}</span>
+            </div>
+            <div class="diff-content">
+                ${diffBlocksHtml}
+            </div>
+        </div>`;
+    }
+
+    private generateSideBySideRows(lines: any[]): any[] {
+        const rows: any[] = [];
+        let leftLines: any[] = [];
+        let rightLines: any[] = [];
+
+        // Separate deleted and added lines
+        for (const line of lines) {
+            if (line.lineType === 'deleted') {
+                leftLines.push(line);
+            } else if (line.lineType === 'added') {
+                rightLines.push(line);
+            } else if (line.lineType === 'unchanged') {
+                // Flush any pending changes first
+                this.flushSideBySideChanges(leftLines, rightLines, rows);
+                leftLines = [];
+                rightLines = [];
+
+                // Add unchanged line to both sides
+                rows.push({
+                    leftNumber: line.oLine,
+                    leftContent: line.line,
+                    leftType: 'unchanged',
+                    rightNumber: line.mLine,
+                    rightContent: line.line,
+                    rightType: 'unchanged'
+                });
+            }
+        }
+
+        // Flush any remaining changes
+        this.flushSideBySideChanges(leftLines, rightLines, rows);
+
+        return rows;
+    }
+
+    private flushSideBySideChanges(leftLines: any[], rightLines: any[], rows: any[]): void {
+        const maxLines = Math.max(leftLines.length, rightLines.length);
+
+        for (let i = 0; i < maxLines; i++) {
+            const leftLine = i < leftLines.length ? leftLines[i] : null;
+            const rightLine = i < rightLines.length ? rightLines[i] : null;
+
+            rows.push({
+                leftNumber: leftLine?.oLine || '',
+                leftContent: leftLine?.line || '',
+                leftType: leftLine ? 'deleted' : 'empty',
+                rightNumber: rightLine?.mLine || '',
+                rightContent: rightLine?.line || '',
+                rightType: rightLine ? 'added' : 'empty'
+            });
+        }
     }
 
     private escapeHtml(text: string): string {

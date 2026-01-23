@@ -45,6 +45,43 @@ export interface CreatePullRequestParams {
     description: string;
 }
 
+export interface FileChange {
+    changeType: string;
+    item: {
+        path: string;
+    };
+}
+
+export interface PullRequestChange {
+    changeId: number;
+    changeType: string;
+    item: {
+        path: string;
+    };
+}
+
+export interface FileDiff {
+    path: string;
+    changeType: string;
+    blocks: DiffBlock[];
+}
+
+export interface DiffBlock {
+    changeType: string;
+    mLine: number;
+    mLinesCount: number;
+    oLine: number;
+    oLinesCount: number;
+    lines: DiffLine[];
+}
+
+export interface DiffLine {
+    line: string;
+    lineType: 'added' | 'deleted' | 'unchanged';
+    oLine?: number;
+    mLine?: number;
+}
+
 export class AzureDevOpsClient {
     private axiosInstance: AxiosInstance;
     private config: AzureDevOpsConfig;
@@ -265,6 +302,230 @@ export class AzureDevOpsClient {
             return response.data.value.map((ref: any) => ref.name);
         } catch (error) {
             throw this.handleError(error, 'Failed to fetch branches');
+        }
+    }
+
+    /**
+     * Get pull request changes (file diffs)
+     */
+    async getPullRequestChanges(pullRequestId: number): Promise<PullRequestChange[]> {
+        try {
+            // First get the iterations to find the latest one
+            const iterationsResponse = await this.axiosInstance.get(
+                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}/iterations`,
+                {
+                    params: {
+                        'api-version': '7.0'
+                    }
+                }
+            );
+
+            const iterations = iterationsResponse.data.value;
+            if (iterations.length === 0) {
+                return [];
+            }
+
+            // Get the latest iteration
+            const latestIteration = iterations[iterations.length - 1];
+
+            // Get changes for the latest iteration
+            const changesResponse = await this.axiosInstance.get(
+                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}/iterations/${latestIteration.id}/changes`,
+                {
+                    params: {
+                        'api-version': '7.0'
+                    }
+                }
+            );
+
+            return changesResponse.data.changeEntries || [];
+        } catch (error) {
+            throw this.handleError(error, `Failed to fetch changes for PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Get detailed file diffs for a pull request using Git diff API
+     */
+    async getPullRequestDiffs(pullRequestId: number): Promise<FileDiff[]> {
+        try {
+            // Get the pull request details
+            const prResponse = await this.axiosInstance.get(
+                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}`,
+                {
+                    params: {
+                        'api-version': '7.1-preview.1'
+                    }
+                }
+            );
+
+            const pr = prResponse.data;
+
+            // Use the source and target refs directly
+            const sourceRef = pr.sourceRefName;
+            const targetRef = pr.targetRefName;
+
+            if (!sourceRef || !targetRef) {
+                return [];
+            }
+
+            // Get the diff between target and source branches
+            const diffResponse = await this.axiosInstance.get(
+                `/git/repositories/${this.config.repository}/diffs/commits`,
+                {
+                    params: {
+                        'api-version': '7.1-preview.1',
+                        'baseVersion': targetRef.replace('refs/heads/', ''),
+                        'baseVersionType': 'branch',
+                        'targetVersion': sourceRef.replace('refs/heads/', ''),
+                        'targetVersionType': 'branch',
+                        'diffCommonCommit': true
+                    }
+                }
+            );
+
+            const changes = diffResponse.data.changes || [];
+            const fileDiffs: FileDiff[] = [];
+
+            // Process each file change
+            for (const change of changes) {
+                if (!change.item || change.item.isFolder) {
+                    continue;
+                }
+
+                // Get the actual diff for this file
+                const filePath = change.item.path;
+                const blocks: DiffBlock[] = [];
+
+                try {
+                    // Fetch file content from both versions for comparison
+                    const baseVersionParams = {
+                        'api-version': '7.0',
+                        'path': filePath,
+                        'versionDescriptor.version': targetRef.replace('refs/heads/', ''),
+                        'versionDescriptor.versionType': 'branch',
+                        '$format': 'text'
+                    };
+
+                    const targetVersionParams = {
+                        'api-version': '7.0',
+                        'path': filePath,
+                        'versionDescriptor.version': sourceRef.replace('refs/heads/', ''),
+                        'versionDescriptor.versionType': 'branch',
+                        '$format': 'text'
+                    };
+
+                    let baseContent = '';
+                    let targetContent = '';
+
+                    // Fetch base version (target branch)
+                    if (change.changeType !== 'add') {
+                        try {
+                            const baseResponse = await this.axiosInstance.get(
+                                `/git/repositories/${this.config.repository}/items`,
+                                { params: baseVersionParams }
+                            );
+                            baseContent = baseResponse.data || '';
+                        } catch {
+                            baseContent = '';
+                        }
+                    }
+
+                    // Fetch target version (source branch)
+                    if (change.changeType !== 'delete') {
+                        try {
+                            const targetResponse = await this.axiosInstance.get(
+                                `/git/repositories/${this.config.repository}/items`,
+                                { params: targetVersionParams }
+                            );
+                            targetContent = targetResponse.data || '';
+                        } catch {
+                            targetContent = '';
+                        }
+                    }
+
+                    // Generate diff lines
+                    const diffLines = this.generateDiff(baseContent, targetContent);
+                    if (diffLines.length > 0) {
+                        blocks.push({
+                            changeType: change.changeType,
+                            mLine: 0,
+                            mLinesCount: diffLines.filter(l => l.lineType === 'added').length,
+                            oLine: 0,
+                            oLinesCount: diffLines.filter(l => l.lineType === 'deleted').length,
+                            lines: diffLines
+                        });
+                    }
+                } catch (fileError) {
+                    console.error(`Failed to fetch diff for ${filePath}:`, fileError);
+                }
+
+                fileDiffs.push({
+                    path: filePath,
+                    changeType: change.changeType,
+                    blocks
+                });
+            }
+
+            return fileDiffs;
+        } catch (error) {
+            throw this.handleError(error, `Failed to fetch diffs for PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Generate diff lines by comparing two file contents
+     */
+    private generateDiff(baseContent: string, targetContent: string): DiffLine[] {
+        const lines: DiffLine[] = [];
+        const baseLines = baseContent.split('\n');
+        const targetLines = targetContent.split('\n');
+
+        // Simple line-by-line diff
+        const maxLines = Math.max(baseLines.length, targetLines.length);
+
+        for (let i = 0; i < maxLines; i++) {
+            const baseLine = i < baseLines.length ? baseLines[i] : null;
+            const targetLine = i < targetLines.length ? targetLines[i] : null;
+
+            if (baseLine === targetLine && baseLine !== null) {
+                // Unchanged line - only show first and last few for context
+                if (i < 3 || i >= maxLines - 3) {
+                    lines.push({
+                        line: baseLine,
+                        lineType: 'unchanged',
+                        oLine: i + 1,
+                        mLine: i + 1
+                    });
+                }
+            } else {
+                // Changed lines
+                if (baseLine !== null && (targetLine === null || baseLine !== targetLine)) {
+                    lines.push({
+                        line: baseLine,
+                        lineType: 'deleted',
+                        oLine: i + 1
+                    });
+                }
+                if (targetLine !== null && (baseLine === null || baseLine !== targetLine)) {
+                    lines.push({
+                        line: targetLine,
+                        lineType: 'added',
+                        mLine: i + 1
+                    });
+                }
+            }
+        }
+
+        return lines;
+    }
+
+    private getChangeTypeString(changeType: number): string {
+        switch (changeType) {
+            case 1: return 'delete';
+            case 2: return 'add';
+            case 3: return 'edit';
+            default: return 'none';
         }
     }
 
