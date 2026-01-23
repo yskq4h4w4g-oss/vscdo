@@ -2,7 +2,7 @@
   "name": "azure-devops-pr-manager",
   "displayName": "Azure DevOps PR Manager",
   "description": "Manage Azure DevOps pull requests and monitor pipeline status",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -90,6 +90,10 @@
         }
       }
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yskq4h4w4g-oss/vscdo.git"
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
