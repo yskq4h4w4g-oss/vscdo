@@ -1,0 +1,112 @@
+{
+  "name": "azure-devops-pr-manager",
+  "displayName": "Azure DevOps PR Manager",
+  "description": "Manage Azure DevOps pull requests and monitor pipeline status",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "azureDevOps.refreshPullRequests",
+        "title": "Azure DevOps: Refresh Pull Requests",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "azureDevOps.createPullRequest",
+        "title": "Azure DevOps: Create Pull Request",
+        "icon": "$(git-pull-request-create)"
+      },
+      {
+        "command": "azureDevOps.viewPullRequest",
+        "title": "Azure DevOps: View Pull Request Details"
+      },
+      {
+        "command": "azureDevOps.openPullRequestInBrowser",
+        "title": "Azure DevOps: Open Pull Request in Browser",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "azureDevOps.configure",
+        "title": "Azure DevOps: Configure Connection"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "azure-devops",
+          "title": "Azure DevOps",
+          "icon": "$(azure-devops)"
+        }
+      ]
+    },
+    "views": {
+      "azure-devops": [
+        {
+          "id": "azureDevOpsPullRequests",
+          "name": "Pull Requests"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "azureDevOps.refreshPullRequests",
+          "when": "view == azureDevOpsPullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOps.createPullRequest",
+          "when": "view == azureDevOpsPullRequests",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "azureDevOps.viewPullRequest",
+          "when": "view == azureDevOpsPullRequests && viewItem == pullRequest"
+        },
+        {
+          "command": "azureDevOps.openPullRequestInBrowser",
+          "when": "view == azureDevOpsPullRequests && viewItem == pullRequest"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Azure DevOps",
+      "properties": {
+        "azureDevOps.pat": {
+          "type": "string",
+          "default": "",
+          "description": "Personal Access Token with Code (Read & Write) and Build (Read) permissions. Organization, project, and repository are auto-detected from git remote."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.x",
+    "@typescript-eslint/parser": "^6.x",
+    "eslint": "^8.x",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
