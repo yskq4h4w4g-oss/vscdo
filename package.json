@@ -95,6 +95,7 @@
     "type": "git",
     "url": "git+https://github.com/yskq4h4w4g-oss/vscdo.git"
   },
+  "publisher": "tobiaswadsethdev",
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
