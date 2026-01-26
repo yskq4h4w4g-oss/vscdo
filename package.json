@@ -2,7 +2,7 @@
   "name": "azure-devops-pr-manager",
   "displayName": "Azure DevOps PR Manager",
   "description": "Manage Azure DevOps pull requests and monitor pipeline status",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -37,6 +37,10 @@
       {
         "command": "azureDevOps.configure",
         "title": "Azure DevOps: Configure Connection"
+      },
+      {
+        "command": "azureDevOps.clearCredentials",
+        "title": "Azure DevOps: Clear Stored Credentials"
       }
     ],
     "viewsContainers": {
@@ -82,13 +86,7 @@
     },
     "configuration": {
       "title": "Azure DevOps",
-      "properties": {
-        "azureDevOps.pat": {
-          "type": "string",
-          "default": "",
-          "description": "Personal Access Token with Code (Read & Write) and Build (Read) permissions. Organization, project, and repository are auto-detected from git remote."
-        }
-      }
+      "properties": {}
     }
   },
   "repository": {

@@ -56,21 +56,11 @@ Then install the `.vsix` file in VS Code.
    - Build: Read
 6. Copy the generated token
 
-### Manual Configuration
-
-You can also manually configure the extension in VS Code settings:
-
-```json
-{
-  "azureDevOps.pat": "your-personal-access-token"
-}
-```
-
 ## Usage
 
 ### Viewing Pull Requests
 
-1. Open the Azure DevOps view in the Activity Bar (left sidebar)
+1. Open the Azure DevOps view in the Activity Bar
 2. The "Pull Requests" section shows all active PRs
 3. Click on a PR to view details
 4. Expand a PR to see associated pipeline runs
@@ -106,5 +96,3 @@ You can also manually configure the extension in VS Code settings:
 
 - [ ] PR review and comment functionality
 - [ ] Approve/reject PRs from VS Code
-- [ ] Secure credential storage using VS Code Secret Storage
-- [ ] PR diff view

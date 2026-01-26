@@ -3,9 +3,12 @@ import { AzureDevOpsClient, AzureDevOpsConfig, PullRequest } from './azureDevOps
 import { PullRequestProvider } from './pullRequestProvider';
 import { PullRequestWebviewPanel } from './pullRequestWebview';
 
+const PAT_SECRET_KEY = 'azureDevOps.pat';
+
 let client: AzureDevOpsClient | undefined;
 let pullRequestProvider: PullRequestProvider;
 let currentConfig: AzureDevOpsConfig | undefined;
+let secretStorage: vscode.SecretStorage;
 
 interface GitRemoteInfo {
     organizationUrl: string;
@@ -126,15 +129,21 @@ function getPullRequestWebUrl(pullRequestId: number): string {
     return `${currentConfig.organizationUrl}/${currentConfig.project}/_git/${currentConfig.repository}/pullrequest/${pullRequestId}`;
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     console.log('Azure DevOps extension is now active');
+
+    // Initialize secret storage
+    secretStorage = context.secrets;
+
+    // Migrate PAT from old config-based storage to SecretStorage
+    await migratePATToSecretStorage();
 
     // Initialize the pull request provider
     pullRequestProvider = new PullRequestProvider();
     vscode.window.registerTreeDataProvider('azureDevOpsPullRequests', pullRequestProvider);
 
     // Initialize client with current configuration
-    initializeClient();
+    await initializeClient();
 
     // Register commands
     context.subscriptions.push(
@@ -142,29 +151,31 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('azureDevOps.refreshPullRequests', refreshPullRequests),
         vscode.commands.registerCommand('azureDevOps.createPullRequest', createPullRequest),
         vscode.commands.registerCommand('azureDevOps.viewPullRequest', viewPullRequest),
-        vscode.commands.registerCommand('azureDevOps.openPullRequestInBrowser', openPullRequestInBrowser)
-    );
-
-    // Listen for configuration changes
-    context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('azureDevOps')) {
-                initializeClient();
-            }
-        })
+        vscode.commands.registerCommand('azureDevOps.openPullRequestInBrowser', openPullRequestInBrowser),
+        vscode.commands.registerCommand('azureDevOps.clearCredentials', clearCredentials)
     );
 
     // Listen for workspace folder changes to re-detect repo
     context.subscriptions.push(
-        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             console.log('Workspace folders changed, re-initializing client');
-            initializeClient();
+            await initializeClient();
+        })
+    );
+
+    // Listen for secret storage changes
+    context.subscriptions.push(
+        context.secrets.onDidChange(async (e) => {
+            if (e.key === PAT_SECRET_KEY) {
+                console.log('PAT changed in secret storage, re-initializing client');
+                await initializeClient();
+            }
         })
     );
 
     // Show welcome message if PAT not configured
-    const config = vscode.workspace.getConfiguration('azureDevOps');
-    if (!config.get('pat')) {
+    const pat = await secretStorage.get(PAT_SECRET_KEY);
+    if (!pat) {
         vscode.window.showInformationMessage(
             'Azure DevOps extension activated. Configure your PAT to get started.',
             'Configure'
@@ -176,9 +187,37 @@ export function activate(context: vscode.ExtensionContext) {
     }
 }
 
-async function initializeClient() {
+/**
+ * Migrates PAT from the old workspace configuration storage to the new SecretStorage.
+ * This ensures a smooth transition for users upgrading from older versions.
+ */
+async function migratePATToSecretStorage(): Promise<void> {
     const config = vscode.workspace.getConfiguration('azureDevOps');
-    const pat = config.get<string>('pat');
+    const oldPat = config.get<string>('pat');
+
+    if (oldPat) {
+        // Check if we already have a PAT in secret storage
+        const existingPat = await secretStorage.get(PAT_SECRET_KEY);
+
+        if (!existingPat) {
+            // Migrate the PAT to secret storage
+            await secretStorage.store(PAT_SECRET_KEY, oldPat);
+            console.log('Migrated PAT from workspace configuration to SecretStorage');
+        }
+
+        // Clear the old PAT from workspace configuration for security
+        await config.update('pat', undefined, vscode.ConfigurationTarget.Global);
+        await config.update('pat', undefined, vscode.ConfigurationTarget.Workspace);
+        console.log('Cleared PAT from workspace configuration');
+
+        vscode.window.showInformationMessage(
+            'Your PAT has been migrated to secure storage.'
+        );
+    }
+}
+
+async function initializeClient() {
+    const pat = await secretStorage.get(PAT_SECRET_KEY);
 
     if (!pat) {
         client = undefined;
@@ -221,8 +260,6 @@ async function initializeClient() {
 }
 
 async function configureConnection() {
-    const config = vscode.workspace.getConfiguration('azureDevOps');
-
     // Show detected repo info if available
     const detectedInfo = await detectAzureDevOpsFromWorkspace();
     if (detectedInfo) {
@@ -235,25 +272,44 @@ async function configureConnection() {
         );
     }
 
-    // Get PAT
+    // Get PAT - don't show the existing PAT for security reasons
     const pat = await vscode.window.showInputBox({
         prompt: 'Enter your Personal Access Token (PAT)',
-        value: config.get<string>('pat') || '',
         password: true,
-        placeHolder: 'Your PAT with Code (Read & Write) and Build (Read) permissions'
+        placeHolder: 'Your PAT with Code (Read & Write) and Build (Read) permissions',
+        ignoreFocusOut: true
     });
 
     if (!pat) {
         return;
     }
 
-    // Save PAT globally
-    await config.update('pat', pat, vscode.ConfigurationTarget.Global);
+    // Save PAT to secure storage
+    await secretStorage.store(PAT_SECRET_KEY, pat);
 
-    vscode.window.showInformationMessage('Azure DevOps PAT saved');
+    vscode.window.showInformationMessage('Azure DevOps PAT saved securely');
 
     // Reinitialize client
     await initializeClient();
+}
+
+/**
+ * Clears the stored PAT from secure storage.
+ */
+async function clearCredentials() {
+    const confirm = await vscode.window.showWarningMessage(
+        'Are you sure you want to clear your stored PAT?',
+        { modal: true },
+        'Yes, Clear'
+    );
+
+    if (confirm === 'Yes, Clear') {
+        await secretStorage.delete(PAT_SECRET_KEY);
+        client = undefined;
+        currentConfig = undefined;
+        pullRequestProvider.setClient(undefined);
+        vscode.window.showInformationMessage('Azure DevOps credentials cleared');
+    }
 }
 
 async function refreshPullRequests() {
