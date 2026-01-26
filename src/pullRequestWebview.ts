@@ -191,15 +191,23 @@ export class PullRequestWebviewPanel {
                     border-left: 4px solid var(--vscode-textBlockQuote-border);
                     white-space: pre-wrap;
                 }
-                .pipelines {
-                    margin-top: 30px;
+                .latest-pipeline {
+                    margin: 20px 0;
+                    padding: 20px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    border-radius: 8px;
+                    border: 2px solid var(--vscode-panel-border);
+                }
+                .latest-pipeline h2 {
+                    margin-top: 0;
+                    margin-bottom: 15px;
+                    font-size: 18px;
                 }
                 .pipeline-item {
-                    padding: 15px;
-                    margin: 10px 0;
-                    background-color: var(--vscode-editor-inactiveSelectionBackground);
-                    border-radius: 5px;
-                    border-left: 4px solid var(--vscode-panel-border);
+                    padding: 20px;
+                    background-color: var(--vscode-editor-background);
+                    border-radius: 6px;
+                    border-left: 6px solid var(--vscode-panel-border);
                 }
                 .pipeline-item.succeeded {
                     border-left-color: var(--vscode-charts-green);
@@ -214,26 +222,40 @@ export class PullRequestWebviewPanel {
                     display: flex;
                     justify-content: space-between;
                     align-items: center;
-                    margin-bottom: 10px;
+                    margin-bottom: 12px;
                 }
                 .pipeline-name {
                     font-weight: bold;
-                    font-size: 16px;
+                    font-size: 18px;
                 }
                 .pipeline-status {
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-size: 12px;
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                    font-size: 13px;
                     font-weight: bold;
+                    text-transform: uppercase;
+                }
+                .pipeline-status.succeeded {
+                    background-color: var(--vscode-charts-green);
+                    color: white;
+                }
+                .pipeline-status.failed {
+                    background-color: var(--vscode-charts-red);
+                    color: white;
+                }
+                .pipeline-status.inprogress {
+                    background-color: var(--vscode-charts-yellow);
+                    color: black;
                 }
                 .pipeline-details {
                     font-size: 14px;
                     color: var(--vscode-descriptionForeground);
+                    margin-bottom: 12px;
                 }
                 .button {
                     display: inline-block;
                     margin-top: 10px;
-                    padding: 6px 14px;
+                    padding: 8px 16px;
                     background-color: var(--vscode-button-background);
                     color: var(--vscode-button-foreground);
                     text-decoration: none;
@@ -242,12 +264,6 @@ export class PullRequestWebviewPanel {
                 }
                 .button:hover {
                     background-color: var(--vscode-button-hoverBackground);
-                }
-                .no-pipelines {
-                    color: var(--vscode-descriptionForeground);
-                    font-style: italic;
-                    padding: 20px;
-                    text-align: center;
                 }
                 .branches {
                     display: flex;
@@ -423,6 +439,13 @@ export class PullRequestWebviewPanel {
                 </div>
             </div>
 
+            ${pipelines.length > 0 ? `
+            <div class="latest-pipeline">
+                <h2>Latest Pipeline</h2>
+                ${this.getLatestPipelineHtml(pipelines[0])}
+            </div>
+            ` : ''}
+
             <a href="${prWebUrl}" class="button">Open in Azure DevOps</a>
 
             ${pr.description ? `
@@ -435,14 +458,37 @@ export class PullRequestWebviewPanel {
                 ${diffs.length > 0 ? diffs.map(diff => this.getDiffHtml(diff)).join('') :
                 '<div class="no-changes">No file changes found for this pull request</div>'}
             </div>
-
-            <div class="pipelines">
-                <h2>Pipelines (${pipelines.length})</h2>
-                ${pipelines.length > 0 ? pipelines.map(pipeline => this.getPipelineHtml(pipeline)).join('') :
-                '<div class="no-pipelines">No pipelines found for this pull request</div>'}
-            </div>
         </body>
         </html>`;
+    }
+
+    private getLatestPipelineHtml(pipeline: PipelineRun): string {
+        const statusClass = pipeline.state.toLowerCase().replace(/\s+/g, '');
+        const result = pipeline.result.toLowerCase();
+        const state = pipeline.state.toLowerCase();
+
+        let statusBadge = '';
+        let statusBadgeClass = '';
+        if (state === 'completed') {
+            statusBadge = result;
+            statusBadgeClass = result;
+        } else {
+            statusBadge = state;
+            statusBadgeClass = state;
+        }
+
+        return `
+        <div class="pipeline-item ${statusClass}">
+            <div class="pipeline-header">
+                <span class="pipeline-name">${this.escapeHtml(pipeline.name)}</span>
+                <span class="pipeline-status ${statusBadgeClass}">${statusBadge}</span>
+            </div>
+            <div class="pipeline-details">
+                Started: ${new Date(pipeline.createdDate).toLocaleString()}
+                ${pipeline.finishedDate ? `<br>Finished: ${new Date(pipeline.finishedDate).toLocaleString()}` : ''}
+            </div>
+            <a href="${pipeline.url}" class="button">View Pipeline</a>
+        </div>`;
     }
 
     private getPipelineHtml(pipeline: PipelineRun): string {
