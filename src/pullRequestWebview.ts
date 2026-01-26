@@ -265,6 +265,9 @@ export class PullRequestWebviewPanel {
                     color: var(--vscode-descriptionForeground);
                     margin-bottom: 12px;
                 }
+                a.button {
+                    line-height: normal;
+                }
                 .button {
                     display: inline-block;
                     margin-top: 10px;
