@@ -346,17 +346,21 @@ async function createPullRequest() {
         pullRequestProvider.refresh();
 
         // Ask if user wants to open PR
+        const webUrl = getPullRequestWebUrl(pr.pullRequestId);
         const action = await vscode.window.showInformationMessage(
             'Pull request created',
             'View Details',
-            'Open in Browser'
+            'Open in Browser',
+            'Copy Link'
         );
 
         if (action === 'View Details') {
             viewPullRequest(pr);
         } else if (action === 'Open in Browser') {
-            const webUrl = getPullRequestWebUrl(pr.pullRequestId);
             vscode.env.openExternal(vscode.Uri.parse(webUrl));
+        } else if (action === 'Copy Link') {
+            await vscode.env.clipboard.writeText(webUrl);
+            vscode.window.showInformationMessage('PR link copied to clipboard');
         }
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

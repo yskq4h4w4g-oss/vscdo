@@ -39,6 +39,19 @@ export class PullRequestWebviewPanel {
             this.disposables
         );
 
+        // Handle messages from the webview
+        this.panel.webview.onDidReceiveMessage(
+            async message => {
+                switch (message.command) {
+                    case 'copyLink':
+                        await vscode.env.clipboard.writeText(message.url);
+                        vscode.window.showInformationMessage('PR link copied to clipboard');
+                        return;
+                }
+            },
+            null,
+            this.disposables
+        );
     }
 
     public static createOrShow(
@@ -265,6 +278,11 @@ export class PullRequestWebviewPanel {
                 .button:hover {
                     background-color: var(--vscode-button-hoverBackground);
                 }
+                button.button {
+                    border: none;
+                    cursor: pointer;
+                    font-family: var(--vscode-font-family);
+                }
                 .branches {
                     display: flex;
                     align-items: center;
@@ -447,6 +465,7 @@ export class PullRequestWebviewPanel {
             ` : ''}
 
             <a href="${prWebUrl}" class="button">Open in Azure DevOps</a>
+            <button class="button" onclick="copyLink()">Copy Link</button>
 
             ${pr.description ? `
             <h2>Description</h2>
@@ -458,6 +477,16 @@ export class PullRequestWebviewPanel {
                 ${diffs.length > 0 ? diffs.map(diff => this.getDiffHtml(diff)).join('') :
                 '<div class="no-changes">No file changes found for this pull request</div>'}
             </div>
+
+            <script>
+                const vscode = acquireVsCodeApi();
+                function copyLink() {
+                    vscode.postMessage({
+                        command: 'copyLink',
+                        url: '${prWebUrl}'
+                    });
+                }
+            </script>
         </body>
         </html>`;
     }
