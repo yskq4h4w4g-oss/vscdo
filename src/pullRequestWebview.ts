@@ -147,11 +147,25 @@ export class PullRequestWebviewPanel {
         // Construct the web URL for the pull request
         const prWebUrl = `${this.organizationUrl}/${this.project}/_git/${this.repository}/pullrequest/${pr.pullRequestId}`;
 
+        // Prepare diff data for Monaco editors
+        const diffData = diffs.map((diff, index) => ({
+            id: `diff-editor-${index}`,
+            path: diff.path,
+            changeType: diff.changeType,
+            originalContent: diff.originalContent || '',
+            modifiedContent: diff.modifiedContent || '',
+            language: this.getLanguageFromPath(diff.path)
+        }));
+
+        // Generate a nonce for CSP
+        const nonce = this.getNonce();
+
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; worker-src blob:; img-src ${webview.cspSource} https: data:;">
             <title>Pull Request #${pr.pullRequestId}</title>
             <style>
                 body {
@@ -315,6 +329,10 @@ export class PullRequestWebviewPanel {
                     align-items: center;
                     gap: 12px;
                     border-bottom: 1px solid var(--vscode-panel-border);
+                    cursor: pointer;
+                }
+                .diff-file-header:hover {
+                    background-color: var(--vscode-list-hoverBackground);
                 }
                 .diff-file-header.add {
                     border-left: 4px solid var(--vscode-charts-green);
@@ -356,83 +374,30 @@ export class PullRequestWebviewPanel {
                     flex: 1;
                     word-break: break-all;
                 }
-                .diff-content {
-                    background-color: var(--vscode-editor-background);
-                    overflow-x: auto;
-                }
-                .diff-block {
-                    margin: 0;
-                }
-                .diff-row {
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    border-bottom: 1px solid var(--vscode-panel-border);
-                }
-                .diff-side {
-                    display: flex;
-                    min-height: 24px;
-                }
-                .diff-side.left {
-                    border-right: 1px solid var(--vscode-panel-border);
-                }
-                .diff-line-number {
-                    min-width: 50px;
-                    padding: 2px 10px;
-                    color: var(--vscode-descriptionForeground);
-                    text-align: right;
-                    user-select: none;
-                    opacity: 0.6;
-                    background-color: var(--vscode-editor-inactiveSelectionBackground);
-                    font-family: 'Consolas', 'Courier New', monospace;
+                .collapse-icon {
                     font-size: 12px;
-                    line-height: 1.5;
+                    transition: transform 0.2s;
                 }
-                .diff-line-content {
-                    flex: 1;
-                    white-space: pre;
-                    padding: 2px 10px;
-                    overflow-x: auto;
-                    font-family: 'Consolas', 'Courier New', monospace;
-                    font-size: 12px;
-                    line-height: 1.5;
+                .collapse-icon.collapsed {
+                    transform: rotate(-90deg);
                 }
-                .diff-side.deleted {
-                    background-color: rgba(229, 83, 75, 0.15);
-                }
-                .diff-side.deleted .diff-line-number {
-                    color: var(--vscode-charts-red);
-                    opacity: 1;
-                    background-color: rgba(229, 83, 75, 0.2);
-                }
-                .diff-side.added {
-                    background-color: rgba(46, 160, 67, 0.15);
-                }
-                .diff-side.added .diff-line-number {
-                    color: var(--vscode-charts-green);
-                    opacity: 1;
-                    background-color: rgba(46, 160, 67, 0.2);
-                }
-                .diff-side.unchanged {
-                    background-color: transparent;
-                }
-                .diff-side.empty {
-                    background-color: var(--vscode-editor-inactiveSelectionBackground);
-                }
-                .diff-expand {
-                    padding: 8px;
-                    text-align: center;
-                    color: var(--vscode-descriptionForeground);
-                    font-style: italic;
-                    font-size: 12px;
-                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                .diff-editor-container {
+                    height: 400px;
                     border-top: 1px solid var(--vscode-panel-border);
-                    border-bottom: 1px solid var(--vscode-panel-border);
+                }
+                .diff-editor-container.collapsed {
+                    display: none;
                 }
                 .no-changes {
                     color: var(--vscode-descriptionForeground);
                     font-style: italic;
                     padding: 20px;
                     text-align: center;
+                }
+                .loading {
+                    padding: 20px;
+                    text-align: center;
+                    color: var(--vscode-descriptionForeground);
                 }
             </style>
         </head>
@@ -477,21 +442,196 @@ export class PullRequestWebviewPanel {
 
             <div class="changes">
                 <h2>File Changes (${diffs.length})</h2>
-                ${diffs.length > 0 ? diffs.map(diff => this.getDiffHtml(diff)).join('') :
+                ${diffs.length > 0 ? diffs.map((diff, index) => this.getDiffContainerHtml(diff, index)).join('') :
                 '<div class="no-changes">No file changes found for this pull request</div>'}
             </div>
 
-            <script>
+            <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+            <script nonce="${nonce}">
                 const vscode = acquireVsCodeApi();
+                const diffData = ${JSON.stringify(diffData)};
+                const editors = {};
+
                 function copyLink() {
                     vscode.postMessage({
                         command: 'copyLink',
                         url: '${prWebUrl}'
                     });
                 }
+
+                function toggleDiff(index) {
+                    const container = document.getElementById('diff-editor-' + index);
+                    const icon = document.getElementById('collapse-icon-' + index);
+                    if (container.classList.contains('collapsed')) {
+                        container.classList.remove('collapsed');
+                        icon.classList.remove('collapsed');
+                        // Initialize editor if not already done
+                        if (!editors[index]) {
+                            initializeEditor(index);
+                        }
+                    } else {
+                        container.classList.add('collapsed');
+                        icon.classList.add('collapsed');
+                    }
+                }
+
+                function initializeEditor(index) {
+                    const data = diffData[index];
+                    const container = document.getElementById(data.id);
+
+                    if (!container) {
+                        console.error('Container not found for index', index);
+                        return;
+                    }
+
+                    try {
+                        require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' }});
+                        require(['vs/editor/editor.main'], function() {
+                            try {
+                                // Clear loading message
+                                container.innerHTML = '';
+
+                                // Detect VS Code theme
+                                const isDark = document.body.classList.contains('vscode-dark') ||
+                                               getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim().match(/^#[0-3]/);
+
+                                const editor = monaco.editor.createDiffEditor(container, {
+                                    readOnly: true,
+                                    renderSideBySide: true,
+                                    automaticLayout: true,
+                                    theme: isDark ? 'vs-dark' : 'vs',
+                                    scrollBeyondLastLine: false,
+                                    minimap: { enabled: false },
+                                    lineNumbers: 'on',
+                                    glyphMargin: false,
+                                    folding: false,
+                                    lineDecorationsWidth: 0,
+                                    lineNumbersMinChars: 3
+                                });
+
+                                const originalModel = monaco.editor.createModel(data.originalContent, data.language);
+                                const modifiedModel = monaco.editor.createModel(data.modifiedContent, data.language);
+
+                                editor.setModel({
+                                    original: originalModel,
+                                    modified: modifiedModel
+                                });
+
+                                editors[index] = editor;
+
+                                // Adjust height based on content
+                                const lineCount = Math.max(
+                                    data.originalContent.split('\\n').length,
+                                    data.modifiedContent.split('\\n').length
+                                );
+                                const height = Math.min(Math.max(lineCount * 19 + 20, 100), 600);
+                                container.style.height = height + 'px';
+                                editor.layout();
+                            } catch (err) {
+                                console.error('Error creating Monaco editor:', err);
+                                container.innerHTML = '<div class="loading" style="color: red;">Error loading diff editor: ' + err.message + '</div>';
+                            }
+                        }, function(err) {
+                            console.error('Error loading Monaco modules:', err);
+                            container.innerHTML = '<div class="loading" style="color: red;">Error loading Monaco: ' + (err.message || err) + '</div>';
+                        });
+                    } catch (err) {
+                        console.error('Error initializing Monaco:', err);
+                        container.innerHTML = '<div class="loading" style="color: red;">Error: ' + err.message + '</div>';
+                    }
+                }
+
+                // Initialize first visible editors on load
+                window.addEventListener('load', function() {
+                    // Auto-expand and initialize the first 3 diffs
+                    for (let i = 0; i < Math.min(3, diffData.length); i++) {
+                        const container = document.getElementById('diff-editor-' + i);
+                        const icon = document.getElementById('collapse-icon-' + i);
+                        if (container && container.classList.contains('collapsed')) {
+                            container.classList.remove('collapsed');
+                            icon.classList.remove('collapsed');
+                        }
+                        initializeEditor(i);
+                    }
+                });
             </script>
         </body>
         </html>`;
+    }
+
+    private getLanguageFromPath(filePath: string): string {
+        const ext = filePath.split('.').pop()?.toLowerCase() || '';
+        const languageMap: { [key: string]: string } = {
+            'ts': 'typescript',
+            'tsx': 'typescript',
+            'js': 'javascript',
+            'jsx': 'javascript',
+            'json': 'json',
+            'html': 'html',
+            'htm': 'html',
+            'css': 'css',
+            'scss': 'scss',
+            'less': 'less',
+            'md': 'markdown',
+            'yaml': 'yaml',
+            'yml': 'yaml',
+            'xml': 'xml',
+            'py': 'python',
+            'java': 'java',
+            'c': 'c',
+            'cpp': 'cpp',
+            'h': 'c',
+            'hpp': 'cpp',
+            'cs': 'csharp',
+            'go': 'go',
+            'rs': 'rust',
+            'rb': 'ruby',
+            'php': 'php',
+            'sh': 'shell',
+            'bash': 'shell',
+            'sql': 'sql',
+            'swift': 'swift',
+            'kt': 'kotlin',
+            'scala': 'scala',
+            'r': 'r',
+            'ps1': 'powershell',
+            'psm1': 'powershell',
+            'bat': 'bat',
+            'cmd': 'bat'
+        };
+        return languageMap[ext] || 'plaintext';
+    }
+
+    private getDiffContainerHtml(diff: FileDiff, index: number): string {
+        const changeType = diff.changeType.toLowerCase();
+        let changeTypeClass = changeType;
+        let changeTypeLabel = changeType;
+
+        if (changeType === 'add') {
+            changeTypeClass = 'add';
+            changeTypeLabel = 'add';
+        } else if (changeType === 'edit') {
+            changeTypeClass = 'edit';
+            changeTypeLabel = 'edit';
+        } else if (changeType === 'delete') {
+            changeTypeClass = 'delete';
+            changeTypeLabel = 'delete';
+        } else if (changeType === 'rename') {
+            changeTypeClass = 'rename';
+            changeTypeLabel = 'rename';
+        }
+
+        return `
+        <div class="diff-file">
+            <div class="diff-file-header ${changeTypeClass}" onclick="toggleDiff(${index})">
+                <span class="collapse-icon collapsed" id="collapse-icon-${index}">▼</span>
+                <span class="change-type ${changeTypeClass}">${changeTypeLabel}</span>
+                <span class="change-path">${this.escapeHtml(diff.path)}</span>
+            </div>
+            <div class="diff-editor-container collapsed" id="diff-editor-${index}">
+                <div class="loading">Loading diff editor...</div>
+            </div>
+        </div>`;
     }
 
     private getLatestPipelineHtml(pipeline: PipelineRun): string {
@@ -549,117 +689,6 @@ export class PullRequestWebviewPanel {
         </div>`;
     }
 
-    private getDiffHtml(diff: FileDiff): string {
-        const changeType = diff.changeType.toLowerCase();
-        let changeTypeClass = changeType;
-        let changeTypeLabel = changeType;
-
-        // Map Azure DevOps change types to our display types
-        if (changeType === 'add') {
-            changeTypeClass = 'add';
-            changeTypeLabel = 'add';
-        } else if (changeType === 'edit') {
-            changeTypeClass = 'edit';
-            changeTypeLabel = 'edit';
-        } else if (changeType === 'delete') {
-            changeTypeClass = 'delete';
-            changeTypeLabel = 'delete';
-        } else if (changeType === 'rename') {
-            changeTypeClass = 'rename';
-            changeTypeLabel = 'rename';
-        }
-
-        // Generate diff blocks HTML in side-by-side view
-        let diffBlocksHtml = '';
-        if (diff.blocks && diff.blocks.length > 0) {
-            diffBlocksHtml = diff.blocks.map(block => {
-                // Group lines for side-by-side display
-                const rows = this.generateSideBySideRows(block.lines);
-
-                const rowsHtml = rows.map(row => {
-                    return `<div class="diff-row">
-                        <div class="diff-side left ${row.leftType}">
-                            <span class="diff-line-number">${row.leftNumber || ''}</span>
-                            <span class="diff-line-content">${this.escapeHtml(row.leftContent || '')}</span>
-                        </div>
-                        <div class="diff-side right ${row.rightType}">
-                            <span class="diff-line-number">${row.rightNumber || ''}</span>
-                            <span class="diff-line-content">${this.escapeHtml(row.rightContent || '')}</span>
-                        </div>
-                    </div>`;
-                }).join('');
-
-                return `<div class="diff-block">${rowsHtml}</div>`;
-            }).join('');
-        } else {
-            diffBlocksHtml = '<div class="diff-expand">No line changes available</div>';
-        }
-
-        return `
-        <div class="diff-file">
-            <div class="diff-file-header ${changeTypeClass}">
-                <span class="change-type ${changeTypeClass}">${changeTypeLabel}</span>
-                <span class="change-path">${this.escapeHtml(diff.path)}</span>
-            </div>
-            <div class="diff-content">
-                ${diffBlocksHtml}
-            </div>
-        </div>`;
-    }
-
-    private generateSideBySideRows(lines: any[]): any[] {
-        const rows: any[] = [];
-        let leftLines: any[] = [];
-        let rightLines: any[] = [];
-
-        // Separate deleted and added lines
-        for (const line of lines) {
-            if (line.lineType === 'deleted') {
-                leftLines.push(line);
-            } else if (line.lineType === 'added') {
-                rightLines.push(line);
-            } else if (line.lineType === 'unchanged') {
-                // Flush any pending changes first
-                this.flushSideBySideChanges(leftLines, rightLines, rows);
-                leftLines = [];
-                rightLines = [];
-
-                // Add unchanged line to both sides
-                rows.push({
-                    leftNumber: line.oLine,
-                    leftContent: line.line,
-                    leftType: 'unchanged',
-                    rightNumber: line.mLine,
-                    rightContent: line.line,
-                    rightType: 'unchanged'
-                });
-            }
-        }
-
-        // Flush any remaining changes
-        this.flushSideBySideChanges(leftLines, rightLines, rows);
-
-        return rows;
-    }
-
-    private flushSideBySideChanges(leftLines: any[], rightLines: any[], rows: any[]): void {
-        const maxLines = Math.max(leftLines.length, rightLines.length);
-
-        for (let i = 0; i < maxLines; i++) {
-            const leftLine = i < leftLines.length ? leftLines[i] : null;
-            const rightLine = i < rightLines.length ? rightLines[i] : null;
-
-            rows.push({
-                leftNumber: leftLine?.oLine || '',
-                leftContent: leftLine?.line || '',
-                leftType: leftLine ? 'deleted' : 'empty',
-                rightNumber: rightLine?.mLine || '',
-                rightContent: rightLine?.line || '',
-                rightType: rightLine ? 'added' : 'empty'
-            });
-        }
-    }
-
     private escapeHtml(text: string): string {
         const map: { [key: string]: string } = {
             '&': '&amp;',
@@ -669,5 +698,14 @@ export class PullRequestWebviewPanel {
             "'": '&#039;'
         };
         return text.replace(/[&<>"']/g, (m) => map[m]);
+    }
+
+    private getNonce(): string {
+        let text = '';
+        const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        for (let i = 0; i < 32; i++) {
+            text += possible.charAt(Math.floor(Math.random() * possible.length));
+        }
+        return text;
     }
 }

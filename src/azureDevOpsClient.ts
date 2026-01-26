@@ -63,6 +63,8 @@ export interface PullRequestChange {
 export interface FileDiff {
     path: string;
     changeType: string;
+    originalContent: string;
+    modifiedContent: string;
     blocks: DiffBlock[];
 }
 
@@ -397,6 +399,9 @@ export class AzureDevOpsClient {
                 const filePath = change.item.path;
                 const blocks: DiffBlock[] = [];
 
+                let baseContent = '';
+                let targetContent = '';
+
                 try {
                     // Fetch file content from both versions for comparison
                     const baseVersionParams = {
@@ -414,9 +419,6 @@ export class AzureDevOpsClient {
                         'versionDescriptor.versionType': 'branch',
                         '$format': 'text'
                     };
-
-                    let baseContent = '';
-                    let targetContent = '';
 
                     // Fetch base version (target branch)
                     if (change.changeType !== 'add') {
@@ -463,6 +465,8 @@ export class AzureDevOpsClient {
                 fileDiffs.push({
                     path: filePath,
                     changeType: change.changeType,
+                    originalContent: baseContent,
+                    modifiedContent: targetContent,
                     blocks
                 });
             }
