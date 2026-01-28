@@ -276,24 +276,29 @@ export class AzureDevOpsClient {
     async createCommentThread(
         pullRequestId: number,
         content: string,
-        filePath: string,
-        line: number,
-        side: 'left' | 'right'
+        filePath: string | null,
+        line: number | null,
+        side: 'left' | 'right' | null
     ): Promise<CommentThread> {
         try {
             const gitApi = await this.getGitApi();
 
-            const threadContext = side === 'right'
-                ? {
-                    filePath: filePath,
-                    rightFileStart: { line: line, offset: 1 },
-                    rightFileEnd: { line: line, offset: 1 }
-                }
-                : {
-                    filePath: filePath,
-                    leftFileStart: { line: line, offset: 1 },
-                    leftFileEnd: { line: line, offset: 1 }
-                };
+            // Only create threadContext if filePath is provided (file-linked comment)
+            // General PR comments have no threadContext
+            let threadContext = undefined;
+            if (filePath && line && side) {
+                threadContext = side === 'right'
+                    ? {
+                        filePath: filePath,
+                        rightFileStart: { line: line, offset: 1 },
+                        rightFileEnd: { line: line, offset: 1 }
+                    }
+                    : {
+                        filePath: filePath,
+                        leftFileStart: { line: line, offset: 1 },
+                        leftFileEnd: { line: line, offset: 1 }
+                    };
+            }
 
             const thread: GitPullRequestCommentThread = {
                 comments: [

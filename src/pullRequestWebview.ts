@@ -813,6 +813,58 @@ export class PullRequestWebviewPanel {
                     text-align: center;
                     line-height: 14px;
                 }
+                /* General PR comments section */
+                .general-comments-section {
+                    margin: 20px 0;
+                    padding: 20px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    border-radius: 8px;
+                    border: 2px solid var(--vscode-panel-border);
+                }
+                .general-comments-section h2 {
+                    margin-top: 0;
+                    margin-bottom: 15px;
+                    font-size: 18px;
+                }
+                .general-comments-list {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
+                }
+                .general-comment-thread {
+                    background-color: var(--vscode-editor-background);
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 6px;
+                    overflow: hidden;
+                }
+                .general-comment-thread.resolved {
+                    opacity: 0.7;
+                }
+                .general-comment-header {
+                    padding: 8px 12px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    font-size: 12px;
+                    color: var(--vscode-descriptionForeground);
+                }
+                .no-general-comments {
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                    padding: 10px;
+                    text-align: center;
+                }
+                .add-general-comment-container {
+                    margin-top: 15px;
+                    padding-top: 15px;
+                    border-top: 1px solid var(--vscode-panel-border);
+                }
+                .add-general-comment-container h3 {
+                    margin: 0 0 10px 0;
+                    font-size: 14px;
+                    color: var(--vscode-descriptionForeground);
+                }
             </style>
         </head>
         <body>
@@ -860,6 +912,22 @@ export class PullRequestWebviewPanel {
                 <div class="voting-section">
                     <h3>Cast Your Vote</h3>
                     ${this.getVotingButtonsHtml()}
+                </div>
+            </div>
+
+            <div class="general-comments-section">
+                <h2>General Comments</h2>
+                <div id="general-comments-list" class="general-comments-list">
+                    <div class="no-general-comments">Loading comments...</div>
+                </div>
+                <div class="add-general-comment-container">
+                    <h3>Add a Comment</h3>
+                    <div class="comment-input-container" style="padding: 0; background: transparent; border: none;">
+                        <textarea class="comment-textarea" placeholder="Write a general comment on this PR..." id="general-comment-textarea"></textarea>
+                        <div class="comment-actions">
+                            <button class="comment-btn primary" id="submit-general-comment-btn">Comment</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -928,6 +996,15 @@ export class PullRequestWebviewPanel {
                     );
                 }
 
+                // Get general PR threads (not linked to any file)
+                // Filter out system-only threads (like vote changes) - only show threads with at least one non-system comment
+                function getGeneralThreads() {
+                    return allThreads.filter(t =>
+                        !t.threadContext && !t.isDeleted &&
+                        t.comments && t.comments.some(c => !c.isDeleted && c.commentType !== 'system')
+                    );
+                }
+
                 // Render comment threads for a file
                 function renderCommentThreads(index) {
                     const data = fileData[index];
@@ -984,6 +1061,76 @@ export class PullRequestWebviewPanel {
                     });
 
                     threadsContainer.innerHTML = html;
+                }
+
+                // Render general PR comment threads (not linked to files)
+                function renderGeneralComments() {
+                    const container = document.getElementById('general-comments-list');
+                    if (!container) return;
+
+                    const threads = getGeneralThreads();
+
+                    if (threads.length === 0) {
+                        container.innerHTML = '<div class="no-general-comments">No general comments on this PR yet.</div>';
+                        return;
+                    }
+
+                    let html = '';
+                    threads.forEach(thread => {
+                        const statusClass = thread.status === 'active' ? 'active' : 'resolved';
+                        const threadClass = thread.status === 'active' ? '' : ' resolved';
+
+                        html += '<div class="general-comment-thread' + threadClass + '" data-thread-id="' + thread.id + '">';
+                        html += '<div class="general-comment-header">';
+                        html += '<span>General comment</span>';
+                        html += '<span class="comment-status ' + statusClass + '">' + thread.status + '</span>';
+                        html += '</div>';
+
+                        thread.comments.forEach(comment => {
+                            if (comment.isDeleted) return;
+                            const commentClass = comment.commentType === 'system' ? ' system' : '';
+                            html += '<div class="comment-item' + commentClass + '">';
+                            html += '<div class="comment-author">';
+                            html += '<span class="comment-author-name">' + escapeHtml(comment.author.displayName) + '</span>';
+                            html += '<span class="comment-date">' + formatDate(comment.publishedDate) + '</span>';
+                            html += '</div>';
+                            html += '<div class="comment-content">' + escapeHtml(comment.content) + '</div>';
+                            html += '</div>';
+                        });
+
+                        // Reply input area
+                        html += '<div class="comment-input-container" id="reply-input-' + thread.id + '">';
+                        html += '<textarea class="comment-textarea" placeholder="Write a reply..." id="reply-textarea-' + thread.id + '"></textarea>';
+                        html += '<div class="comment-actions">';
+                        html += '<button class="comment-btn secondary" onclick="cancelReply(' + thread.id + ')">Cancel</button>';
+                        html += '<button class="comment-btn primary" onclick="submitReply(' + thread.id + ')">Reply</button>';
+                        html += '</div>';
+                        html += '</div>';
+
+                        html += '</div>';
+                    });
+
+                    container.innerHTML = html;
+                }
+
+                // Submit a general PR comment (not linked to a file)
+                function submitGeneralComment() {
+                    const textarea = document.getElementById('general-comment-textarea');
+                    const content = textarea.value.trim();
+                    if (!content) return;
+
+                    const submitBtn = document.getElementById('submit-general-comment-btn');
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Submitting...';
+
+                    vscode.postMessage({
+                        command: 'createComment',
+                        content: content,
+                        filePath: null,
+                        line: null,
+                        side: null,
+                        fileIndex: null
+                    });
                 }
 
                 // Show inline comment input for a specific line
@@ -1100,6 +1247,8 @@ export class PullRequestWebviewPanel {
                         }
                         case 'commentsLoaded': {
                             allThreads = message.threads;
+                            // Render general PR comments
+                            renderGeneralComments();
                             // Update all loaded file comment sections
                             fileData.forEach((data, index) => {
                                 if (data.loaded) {
@@ -1112,8 +1261,20 @@ export class PullRequestWebviewPanel {
                         case 'commentCreated': {
                             allThreads.push(message.thread);
                             cancelNewComment();
-                            renderCommentThreads(message.fileIndex);
-                            updateEditorDecorations(message.fileIndex);
+                            if (message.fileIndex !== null && message.fileIndex !== undefined) {
+                                renderCommentThreads(message.fileIndex);
+                                updateEditorDecorations(message.fileIndex);
+                            } else {
+                                // General comment - clear the textarea and re-render general comments
+                                const textarea = document.getElementById('general-comment-textarea');
+                                if (textarea) textarea.value = '';
+                                const submitBtn = document.getElementById('submit-general-comment-btn');
+                                if (submitBtn) {
+                                    submitBtn.disabled = false;
+                                    submitBtn.textContent = 'Comment';
+                                }
+                                renderGeneralComments();
+                            }
                             break;
                         }
                         case 'replyCreated': {
@@ -1121,13 +1282,19 @@ export class PullRequestWebviewPanel {
                             if (thread) {
                                 thread.comments.push(message.comment);
                             }
-                            // Find which file this thread belongs to and re-render
-                            fileData.forEach((data, index) => {
-                                const threads = getThreadsForFile(data.path);
-                                if (threads.find(t => t.id === message.threadId)) {
-                                    renderCommentThreads(index);
-                                }
-                            });
+                            // Check if this is a general comment thread (no threadContext)
+                            const isGeneralThread = thread && !thread.threadContext;
+                            if (isGeneralThread) {
+                                renderGeneralComments();
+                            } else {
+                                // Find which file this thread belongs to and re-render
+                                fileData.forEach((data, index) => {
+                                    const threads = getThreadsForFile(data.path);
+                                    if (threads.find(t => t.id === message.threadId)) {
+                                        renderCommentThreads(index);
+                                    }
+                                });
+                            }
                             break;
                         }
                         case 'commentError':
@@ -1329,6 +1496,12 @@ export class PullRequestWebviewPanel {
                             vote(voteValue);
                         });
                     });
+
+                    // General comment submit button
+                    const generalCommentBtn = document.getElementById('submit-general-comment-btn');
+                    if (generalCommentBtn) {
+                        generalCommentBtn.addEventListener('click', submitGeneralComment);
+                    }
 
                     // Diff file headers - use event delegation
                     document.querySelectorAll('.diff-file-header').forEach(function(header) {
