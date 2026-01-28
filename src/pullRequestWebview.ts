@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff, FileInfo, Reviewer, CurrentUser } from './azureDevOpsClient';
+import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff, FileInfo, Reviewer, CurrentUser, CommentThread, PRComment } from './azureDevOpsClient';
 
 export class PullRequestWebviewPanel {
     private static currentPanel: PullRequestWebviewPanel | undefined;
@@ -11,6 +11,7 @@ export class PullRequestWebviewPanel {
     private sourceRef: string = '';
     private targetRef: string = '';
     private currentUser: CurrentUser | undefined;
+    private commentThreads: CommentThread[] = [];
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -85,6 +86,75 @@ export class PullRequestWebviewPanel {
                         } catch (error) {
                             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
                             vscode.window.showErrorMessage(`Failed to vote: ${errorMessage}`);
+                        }
+                        return;
+                    case 'fetchComments':
+                        try {
+                            const threads = await this.client.getCommentThreads(this.pullRequest.pullRequestId);
+                            this.commentThreads = threads;
+                            this.panel.webview.postMessage({
+                                command: 'commentsLoaded',
+                                threads: threads
+                            });
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            this.panel.webview.postMessage({
+                                command: 'commentsError',
+                                error: errorMessage
+                            });
+                        }
+                        return;
+                    case 'createComment':
+                        try {
+                            const newThread = await this.client.createCommentThread(
+                                this.pullRequest.pullRequestId,
+                                message.content,
+                                message.filePath,
+                                message.line,
+                                message.side
+                            );
+                            this.commentThreads.push(newThread);
+                            this.panel.webview.postMessage({
+                                command: 'commentCreated',
+                                thread: newThread,
+                                fileIndex: message.fileIndex
+                            });
+                            vscode.window.showInformationMessage('Comment added');
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            this.panel.webview.postMessage({
+                                command: 'commentError',
+                                error: errorMessage
+                            });
+                            vscode.window.showErrorMessage(`Failed to add comment: ${errorMessage}`);
+                        }
+                        return;
+                    case 'replyComment':
+                        try {
+                            const reply = await this.client.replyToThread(
+                                this.pullRequest.pullRequestId,
+                                message.threadId,
+                                message.content
+                            );
+                            // Update local thread with the new reply
+                            const thread = this.commentThreads.find(t => t.id === message.threadId);
+                            if (thread) {
+                                thread.comments.push(reply);
+                            }
+                            this.panel.webview.postMessage({
+                                command: 'replyCreated',
+                                threadId: message.threadId,
+                                comment: reply
+                            });
+                            vscode.window.showInformationMessage('Reply added');
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            this.panel.webview.postMessage({
+                                command: 'replyError',
+                                threadId: message.threadId,
+                                error: errorMessage
+                            });
+                            vscode.window.showErrorMessage(`Failed to add reply: ${errorMessage}`);
                         }
                         return;
                 }
@@ -203,7 +273,8 @@ export class PullRequestWebviewPanel {
             language: this.getLanguageFromPath(file.path),
             loaded: false,
             originalContent: '',
-            modifiedContent: ''
+            modifiedContent: '',
+            threads: [] as CommentThread[]
         }));
 
         // Generate a nonce for CSP
@@ -437,6 +508,9 @@ export class PullRequestWebviewPanel {
                 .diff-editor-container.collapsed {
                     display: none;
                 }
+                .comment-threads-container.collapsed {
+                    display: none;
+                }
                 .no-changes {
                     color: var(--vscode-descriptionForeground);
                     font-style: italic;
@@ -584,6 +658,161 @@ export class PullRequestWebviewPanel {
                     background-color: var(--vscode-button-secondaryBackground);
                     color: var(--vscode-button-secondaryForeground);
                 }
+                /* Comment styles */
+                .comment-threads-container {
+                    padding: 10px 15px;
+                    background-color: var(--vscode-editor-background);
+                    border-top: 1px solid var(--vscode-panel-border);
+                }
+                .comment-thread {
+                    margin: 10px 0;
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 6px;
+                    overflow: hidden;
+                }
+                .comment-thread.resolved {
+                    opacity: 0.7;
+                }
+                .comment-thread-header {
+                    padding: 8px 12px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    font-size: 12px;
+                    color: var(--vscode-descriptionForeground);
+                }
+                .comment-line-info {
+                    font-family: monospace;
+                }
+                .comment-status {
+                    padding: 2px 8px;
+                    border-radius: 3px;
+                    font-size: 11px;
+                    text-transform: uppercase;
+                }
+                .comment-status.active {
+                    background-color: var(--vscode-charts-blue);
+                    color: white;
+                }
+                .comment-status.resolved {
+                    background-color: var(--vscode-charts-green);
+                    color: white;
+                }
+                .comment-item {
+                    padding: 12px;
+                    border-bottom: 1px solid var(--vscode-panel-border);
+                }
+                .comment-item:last-child {
+                    border-bottom: none;
+                }
+                .comment-item.system {
+                    background-color: var(--vscode-textBlockQuote-background);
+                    font-style: italic;
+                    color: var(--vscode-descriptionForeground);
+                }
+                .comment-author {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 8px;
+                }
+                .comment-author-name {
+                    font-weight: 600;
+                    color: var(--vscode-foreground);
+                }
+                .comment-date {
+                    font-size: 11px;
+                    color: var(--vscode-descriptionForeground);
+                }
+                .comment-content {
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                    line-height: 1.5;
+                }
+                .comment-input-container {
+                    padding: 12px;
+                    background-color: var(--vscode-input-background);
+                    border-top: 1px solid var(--vscode-panel-border);
+                }
+                .comment-input-container.inline {
+                    margin: 10px 0;
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 6px;
+                }
+                .comment-textarea {
+                    width: 100%;
+                    min-height: 80px;
+                    padding: 10px;
+                    border: 1px solid var(--vscode-input-border);
+                    border-radius: 4px;
+                    background-color: var(--vscode-input-background);
+                    color: var(--vscode-input-foreground);
+                    font-family: var(--vscode-font-family);
+                    font-size: 13px;
+                    resize: vertical;
+                    box-sizing: border-box;
+                }
+                .comment-textarea:focus {
+                    outline: 1px solid var(--vscode-focusBorder);
+                }
+                .comment-actions {
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 8px;
+                    margin-top: 10px;
+                }
+                .comment-btn {
+                    padding: 6px 14px;
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    cursor: pointer;
+                    font-family: var(--vscode-font-family);
+                }
+                .comment-btn.primary {
+                    background-color: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                }
+                .comment-btn.primary:hover {
+                    background-color: var(--vscode-button-hoverBackground);
+                }
+                .comment-btn.primary:disabled {
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
+                .comment-btn.secondary {
+                    background-color: var(--vscode-button-secondaryBackground);
+                    color: var(--vscode-button-secondaryForeground);
+                }
+                .comment-btn.secondary:hover {
+                    background-color: var(--vscode-button-secondaryHoverBackground);
+                }
+                .add-comment-hint {
+                    font-size: 11px;
+                    color: var(--vscode-descriptionForeground);
+                    padding: 8px 12px;
+                    text-align: center;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                }
+                .no-comments {
+                    padding: 15px;
+                    text-align: center;
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                }
+                .comment-indicator {
+                    display: inline-block;
+                    width: 14px;
+                    height: 14px;
+                    background-color: var(--vscode-charts-blue);
+                    border-radius: 50%;
+                    margin-left: 8px;
+                    font-size: 10px;
+                    color: white;
+                    text-align: center;
+                    line-height: 14px;
+                }
             </style>
         </head>
         <body>
@@ -646,6 +875,8 @@ export class PullRequestWebviewPanel {
                 const fileData = ${JSON.stringify(fileData)};
                 const editors = {};
                 const pendingLoads = {};
+                let allThreads = [];
+                let activeCommentInput = null;
 
                 function copyLink() {
                     vscode.postMessage({
@@ -656,9 +887,11 @@ export class PullRequestWebviewPanel {
 
                 function toggleDiff(index) {
                     const container = document.getElementById('diff-editor-' + index);
+                    const commentsContainer = document.getElementById('comment-threads-' + index);
                     const icon = document.getElementById('collapse-icon-' + index);
                     if (container.classList.contains('collapsed')) {
                         container.classList.remove('collapsed');
+                        if (commentsContainer) commentsContainer.classList.remove('collapsed');
                         icon.classList.remove('collapsed');
                         // Request diff content if not already loaded
                         if (!fileData[index].loaded && !pendingLoads[index]) {
@@ -668,6 +901,7 @@ export class PullRequestWebviewPanel {
                         }
                     } else {
                         container.classList.add('collapsed');
+                        if (commentsContainer) commentsContainer.classList.add('collapsed');
                         icon.classList.add('collapsed');
                     }
                 }
@@ -685,6 +919,161 @@ export class PullRequestWebviewPanel {
                         filePath: data.path,
                         changeType: data.changeType
                     });
+                }
+
+                // Get threads for a specific file
+                function getThreadsForFile(filePath) {
+                    return allThreads.filter(t =>
+                        t.threadContext && t.threadContext.filePath === filePath && !t.isDeleted
+                    );
+                }
+
+                // Render comment threads for a file
+                function renderCommentThreads(index) {
+                    const data = fileData[index];
+                    const threadsContainer = document.getElementById('comment-threads-' + index);
+                    if (!threadsContainer) return;
+
+                    const threads = getThreadsForFile(data.path);
+                    fileData[index].threads = threads;
+
+                    if (threads.length === 0) {
+                        threadsContainer.innerHTML = '<div class="no-comments">No comments on this file. Click on a line number in the diff to add a comment.</div>';
+                        return;
+                    }
+
+                    let html = '';
+                    threads.forEach(thread => {
+                        const lineInfo = thread.threadContext.rightFileStart
+                            ? 'Line ' + thread.threadContext.rightFileStart.line + ' (modified)'
+                            : thread.threadContext.leftFileStart
+                                ? 'Line ' + thread.threadContext.leftFileStart.line + ' (original)'
+                                : 'File comment';
+
+                        const statusClass = thread.status === 'active' ? 'active' : 'resolved';
+                        const threadClass = thread.status === 'active' ? '' : ' resolved';
+
+                        html += '<div class="comment-thread' + threadClass + '" data-thread-id="' + thread.id + '">';
+                        html += '<div class="comment-thread-header">';
+                        html += '<span class="comment-line-info">' + lineInfo + '</span>';
+                        html += '<span class="comment-status ' + statusClass + '">' + thread.status + '</span>';
+                        html += '</div>';
+
+                        thread.comments.forEach(comment => {
+                            if (comment.isDeleted) return;
+                            const commentClass = comment.commentType === 'system' ? ' system' : '';
+                            html += '<div class="comment-item' + commentClass + '">';
+                            html += '<div class="comment-author">';
+                            html += '<span class="comment-author-name">' + escapeHtml(comment.author.displayName) + '</span>';
+                            html += '<span class="comment-date">' + formatDate(comment.publishedDate) + '</span>';
+                            html += '</div>';
+                            html += '<div class="comment-content">' + escapeHtml(comment.content) + '</div>';
+                            html += '</div>';
+                        });
+
+                        // Reply input area
+                        html += '<div class="comment-input-container" id="reply-input-' + thread.id + '">';
+                        html += '<textarea class="comment-textarea" placeholder="Write a reply..." id="reply-textarea-' + thread.id + '"></textarea>';
+                        html += '<div class="comment-actions">';
+                        html += '<button class="comment-btn secondary" onclick="cancelReply(' + thread.id + ')">Cancel</button>';
+                        html += '<button class="comment-btn primary" onclick="submitReply(' + thread.id + ')">Reply</button>';
+                        html += '</div>';
+                        html += '</div>';
+
+                        html += '</div>';
+                    });
+
+                    threadsContainer.innerHTML = html;
+                }
+
+                // Show inline comment input for a specific line
+                function showCommentInput(index, lineNumber, side) {
+                    // Remove any existing comment input
+                    if (activeCommentInput) {
+                        activeCommentInput.remove();
+                        activeCommentInput = null;
+                    }
+
+                    const data = fileData[index];
+                    const inputHtml = '<div class="comment-input-container inline" id="inline-comment-input">' +
+                        '<div style="font-size: 12px; color: var(--vscode-descriptionForeground); margin-bottom: 8px;">' +
+                        'Adding comment on line ' + lineNumber + ' (' + (side === 'right' ? 'modified' : 'original') + ')' +
+                        '</div>' +
+                        '<textarea class="comment-textarea" placeholder="Write your comment..." id="new-comment-textarea"></textarea>' +
+                        '<div class="comment-actions">' +
+                        '<button class="comment-btn secondary" onclick="cancelNewComment()">Cancel</button>' +
+                        '<button class="comment-btn primary" onclick="submitNewComment(' + index + ', ' + lineNumber + ', \\'' + side + '\\')">Comment</button>' +
+                        '</div>' +
+                        '</div>';
+
+                    const threadsContainer = document.getElementById('comment-threads-' + index);
+                    if (threadsContainer) {
+                        threadsContainer.insertAdjacentHTML('afterbegin', inputHtml);
+                        activeCommentInput = document.getElementById('inline-comment-input');
+                        document.getElementById('new-comment-textarea').focus();
+                    }
+                }
+
+                function cancelNewComment() {
+                    if (activeCommentInput) {
+                        activeCommentInput.remove();
+                        activeCommentInput = null;
+                    }
+                }
+
+                function submitNewComment(index, lineNumber, side) {
+                    const textarea = document.getElementById('new-comment-textarea');
+                    const content = textarea.value.trim();
+                    if (!content) return;
+
+                    const data = fileData[index];
+                    const submitBtn = activeCommentInput.querySelector('.comment-btn.primary');
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Submitting...';
+
+                    vscode.postMessage({
+                        command: 'createComment',
+                        content: content,
+                        filePath: data.path,
+                        line: lineNumber,
+                        side: side,
+                        fileIndex: index
+                    });
+                }
+
+                function cancelReply(threadId) {
+                    const textarea = document.getElementById('reply-textarea-' + threadId);
+                    if (textarea) {
+                        textarea.value = '';
+                    }
+                }
+
+                function submitReply(threadId) {
+                    const textarea = document.getElementById('reply-textarea-' + threadId);
+                    const content = textarea.value.trim();
+                    if (!content) return;
+
+                    const container = document.getElementById('reply-input-' + threadId);
+                    const submitBtn = container.querySelector('.comment-btn.primary');
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Submitting...';
+
+                    vscode.postMessage({
+                        command: 'replyComment',
+                        threadId: threadId,
+                        content: content
+                    });
+                }
+
+                function escapeHtml(text) {
+                    const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+                    return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+                }
+
+                function formatDate(dateStr) {
+                    if (!dateStr) return '';
+                    const date = new Date(dateStr);
+                    return date.toLocaleString();
                 }
 
                 // Handle messages from the extension
@@ -709,8 +1098,110 @@ export class PullRequestWebviewPanel {
                             }
                             break;
                         }
+                        case 'commentsLoaded': {
+                            allThreads = message.threads;
+                            // Update all loaded file comment sections
+                            fileData.forEach((data, index) => {
+                                if (data.loaded) {
+                                    renderCommentThreads(index);
+                                    updateEditorDecorations(index);
+                                }
+                            });
+                            break;
+                        }
+                        case 'commentCreated': {
+                            allThreads.push(message.thread);
+                            cancelNewComment();
+                            renderCommentThreads(message.fileIndex);
+                            updateEditorDecorations(message.fileIndex);
+                            break;
+                        }
+                        case 'replyCreated': {
+                            const thread = allThreads.find(t => t.id === message.threadId);
+                            if (thread) {
+                                thread.comments.push(message.comment);
+                            }
+                            // Find which file this thread belongs to and re-render
+                            fileData.forEach((data, index) => {
+                                const threads = getThreadsForFile(data.path);
+                                if (threads.find(t => t.id === message.threadId)) {
+                                    renderCommentThreads(index);
+                                }
+                            });
+                            break;
+                        }
+                        case 'commentError':
+                        case 'replyError': {
+                            // Re-enable buttons
+                            document.querySelectorAll('.comment-btn.primary:disabled').forEach(btn => {
+                                btn.disabled = false;
+                                btn.textContent = btn.closest('#inline-comment-input') ? 'Comment' : 'Reply';
+                            });
+                            break;
+                        }
                     }
                 });
+
+                // Update Monaco editor decorations to show comment indicators
+                function updateEditorDecorations(index) {
+                    const editor = editors[index];
+                    if (!editor) return;
+
+                    const data = fileData[index];
+                    const threads = getThreadsForFile(data.path);
+
+                    // Get both editors
+                    const originalEditor = editor.getOriginalEditor();
+                    const modifiedEditor = editor.getModifiedEditor();
+
+                    // Decorations for original (left) side
+                    const originalDecorations = [];
+                    // Decorations for modified (right) side
+                    const modifiedDecorations = [];
+
+                    threads.forEach(thread => {
+                        if (thread.threadContext) {
+                            if (thread.threadContext.leftFileStart) {
+                                originalDecorations.push({
+                                    range: new monaco.Range(
+                                        thread.threadContext.leftFileStart.line,
+                                        1,
+                                        thread.threadContext.leftFileStart.line,
+                                        1
+                                    ),
+                                    options: {
+                                        isWholeLine: true,
+                                        glyphMarginClassName: 'comment-glyph',
+                                        glyphMarginHoverMessage: { value: 'Click to view/add comments' }
+                                    }
+                                });
+                            }
+                            if (thread.threadContext.rightFileStart) {
+                                modifiedDecorations.push({
+                                    range: new monaco.Range(
+                                        thread.threadContext.rightFileStart.line,
+                                        1,
+                                        thread.threadContext.rightFileStart.line,
+                                        1
+                                    ),
+                                    options: {
+                                        isWholeLine: true,
+                                        glyphMarginClassName: 'comment-glyph',
+                                        glyphMarginHoverMessage: { value: 'Click to view/add comments' }
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                    // Apply decorations
+                    if (originalEditor) {
+                        originalEditor.deltaDecorations([], originalDecorations);
+                    }
+                    if (modifiedEditor) {
+                        modifiedEditor.deltaDecorations([], modifiedDecorations);
+                    }
+                }
 
                 function initializeEditor(index) {
                     const data = fileData[index];
@@ -737,6 +1228,14 @@ export class PullRequestWebviewPanel {
                                 const isDark = document.body.classList.contains('vscode-dark') ||
                                                getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim().match(/^#[0-3]/);
 
+                                // Add CSS for glyph margin
+                                if (!document.getElementById('monaco-comment-styles')) {
+                                    const style = document.createElement('style');
+                                    style.id = 'monaco-comment-styles';
+                                    style.textContent = '.comment-glyph { background-color: var(--vscode-charts-blue); border-radius: 50%; cursor: pointer; }';
+                                    document.head.appendChild(style);
+                                }
+
                                 const editor = monaco.editor.createDiffEditor(container, {
                                     readOnly: true,
                                     renderSideBySide: true,
@@ -745,9 +1244,9 @@ export class PullRequestWebviewPanel {
                                     scrollBeyondLastLine: false,
                                     minimap: { enabled: false },
                                     lineNumbers: 'on',
-                                    glyphMargin: false,
+                                    glyphMargin: true,
                                     folding: false,
-                                    lineDecorationsWidth: 0,
+                                    lineDecorationsWidth: 10,
                                     lineNumbersMinChars: 3
                                 });
 
@@ -761,6 +1260,26 @@ export class PullRequestWebviewPanel {
 
                                 editors[index] = editor;
 
+                                // Add click handlers for glyph margin (to add comments)
+                                const originalEditor = editor.getOriginalEditor();
+                                const modifiedEditor = editor.getModifiedEditor();
+
+                                originalEditor.onMouseDown(function(e) {
+                                    if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
+                                        e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
+                                        const lineNumber = e.target.position.lineNumber;
+                                        showCommentInput(index, lineNumber, 'left');
+                                    }
+                                });
+
+                                modifiedEditor.onMouseDown(function(e) {
+                                    if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
+                                        e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
+                                        const lineNumber = e.target.position.lineNumber;
+                                        showCommentInput(index, lineNumber, 'right');
+                                    }
+                                });
+
                                 // Adjust height based on content
                                 const lineCount = Math.max(
                                     data.originalContent.split('\\n').length,
@@ -769,6 +1288,10 @@ export class PullRequestWebviewPanel {
                                 const height = Math.min(Math.max(lineCount * 19 + 20, 100), 600);
                                 container.style.height = height + 'px';
                                 editor.layout();
+
+                                // Render comments for this file
+                                renderCommentThreads(index);
+                                updateEditorDecorations(index);
                             } catch (err) {
                                 console.error('Error creating Monaco editor:', err);
                                 container.innerHTML = '<div class="loading" style="color: red;">Error loading diff editor: ' + err.message + '</div>';
@@ -818,13 +1341,20 @@ export class PullRequestWebviewPanel {
                     // Auto-expand and request diffs for the first 3 files
                     for (let i = 0; i < Math.min(3, fileData.length); i++) {
                         const container = document.getElementById('diff-editor-' + i);
+                        const commentsContainer = document.getElementById('comment-threads-' + i);
                         const icon = document.getElementById('collapse-icon-' + i);
                         if (container && container.classList.contains('collapsed')) {
                             container.classList.remove('collapsed');
                             icon.classList.remove('collapsed');
                         }
+                        if (commentsContainer && commentsContainer.classList.contains('collapsed')) {
+                            commentsContainer.classList.remove('collapsed');
+                        }
                         requestDiff(i);
                     }
+
+                    // Fetch comments for the PR
+                    vscode.postMessage({ command: 'fetchComments' });
                 });
             </script>
         </body>
@@ -902,6 +1432,9 @@ export class PullRequestWebviewPanel {
             </div>
             <div class="diff-editor-container collapsed" id="diff-editor-${index}">
                 <div class="loading">Click to load diff...</div>
+            </div>
+            <div class="comment-threads-container collapsed" id="comment-threads-${index}">
+                <div class="add-comment-hint">Click on a line number in the diff to add a comment</div>
             </div>
         </div>`;
     }

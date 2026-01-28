@@ -1,7 +1,7 @@
 import * as azdev from 'azure-devops-node-api';
 import * as GitApi from 'azure-devops-node-api/GitApi';
 import * as BuildApi from 'azure-devops-node-api/BuildApi';
-import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType, IdentityRefWithVote } from 'azure-devops-node-api/interfaces/GitInterfaces';
+import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType, IdentityRefWithVote, GitPullRequestCommentThread, Comment as GitComment, CommentThreadStatus, CommentType } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { Build, BuildDefinitionReference, BuildStatus, BuildResult } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 
 export interface AzureDevOpsConfig {
@@ -111,6 +111,32 @@ export interface CurrentUser {
     uniqueName: string;
 }
 
+export interface CommentThread {
+    id: number;
+    status: string;
+    comments: PRComment[];
+    threadContext?: {
+        filePath: string;
+        rightFileStart?: { line: number; offset: number };
+        rightFileEnd?: { line: number; offset: number };
+        leftFileStart?: { line: number; offset: number };
+        leftFileEnd?: { line: number; offset: number };
+    };
+    isDeleted: boolean;
+    publishedDate: string;
+    lastUpdatedDate: string;
+}
+
+export interface PRComment {
+    id: number;
+    content: string;
+    author: { displayName: string; uniqueName: string };
+    publishedDate: string;
+    lastUpdatedDate: string;
+    isDeleted: boolean;
+    commentType: string;
+}
+
 export class AzureDevOpsClient {
     private connection: azdev.WebApi;
     private config: AzureDevOpsConfig;
@@ -218,6 +244,111 @@ export class AzureDevOpsClient {
             return this.mapReviewer(result);
         } catch (error) {
             throw this.handleError(error, `Failed to vote on pull request ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Get all comment threads for a pull request
+     */
+    async getCommentThreads(pullRequestId: number): Promise<CommentThread[]> {
+        try {
+            const gitApi = await this.getGitApi();
+            const threads = await gitApi.getThreads(
+                this.config.repository,
+                pullRequestId,
+                this.config.project
+            );
+
+            return (threads || []).map(thread => this.mapCommentThread(thread));
+        } catch (error) {
+            throw this.handleError(error, `Failed to fetch comment threads for PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Create a new comment thread on a pull request
+     * @param pullRequestId The ID of the pull request
+     * @param content The comment content
+     * @param filePath The file path for the comment
+     * @param line The line number
+     * @param side 'right' for modified file (source branch), 'left' for original file (target branch)
+     */
+    async createCommentThread(
+        pullRequestId: number,
+        content: string,
+        filePath: string,
+        line: number,
+        side: 'left' | 'right'
+    ): Promise<CommentThread> {
+        try {
+            const gitApi = await this.getGitApi();
+
+            const threadContext = side === 'right'
+                ? {
+                    filePath: filePath,
+                    rightFileStart: { line: line, offset: 1 },
+                    rightFileEnd: { line: line, offset: 1 }
+                }
+                : {
+                    filePath: filePath,
+                    leftFileStart: { line: line, offset: 1 },
+                    leftFileEnd: { line: line, offset: 1 }
+                };
+
+            const thread: GitPullRequestCommentThread = {
+                comments: [
+                    {
+                        content: content,
+                        commentType: CommentType.Text
+                    }
+                ],
+                status: CommentThreadStatus.Active,
+                threadContext: threadContext
+            };
+
+            const result = await gitApi.createThread(
+                thread,
+                this.config.repository,
+                pullRequestId,
+                this.config.project
+            );
+
+            return this.mapCommentThread(result);
+        } catch (error) {
+            throw this.handleError(error, `Failed to create comment thread on PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Reply to an existing comment thread
+     * @param pullRequestId The ID of the pull request
+     * @param threadId The ID of the thread to reply to
+     * @param content The reply content
+     */
+    async replyToThread(
+        pullRequestId: number,
+        threadId: number,
+        content: string
+    ): Promise<PRComment> {
+        try {
+            const gitApi = await this.getGitApi();
+
+            const comment: GitComment = {
+                content: content,
+                commentType: CommentType.Text
+            };
+
+            const result = await gitApi.createComment(
+                comment,
+                this.config.repository,
+                pullRequestId,
+                threadId,
+                this.config.project
+            );
+
+            return this.mapComment(result);
+        } catch (error) {
+            throw this.handleError(error, `Failed to reply to thread ${threadId}`);
         }
     }
 
@@ -927,5 +1058,94 @@ export class AzureDevOpsClient {
     private handleError(error: any, message: string): Error {
         const errorMessage = error?.message || error?.toString() || 'Unknown error';
         return new Error(`${message}: ${errorMessage}`);
+    }
+
+    /**
+     * Map GitPullRequestCommentThread to our CommentThread interface
+     */
+    private mapCommentThread(thread: GitPullRequestCommentThread): CommentThread {
+        return {
+            id: thread.id || 0,
+            status: this.mapThreadStatus(thread.status),
+            comments: (thread.comments || []).map(c => this.mapComment(c)),
+            threadContext: thread.threadContext ? {
+                filePath: thread.threadContext.filePath || '',
+                rightFileStart: thread.threadContext.rightFileStart ? {
+                    line: thread.threadContext.rightFileStart.line || 0,
+                    offset: thread.threadContext.rightFileStart.offset || 0
+                } : undefined,
+                rightFileEnd: thread.threadContext.rightFileEnd ? {
+                    line: thread.threadContext.rightFileEnd.line || 0,
+                    offset: thread.threadContext.rightFileEnd.offset || 0
+                } : undefined,
+                leftFileStart: thread.threadContext.leftFileStart ? {
+                    line: thread.threadContext.leftFileStart.line || 0,
+                    offset: thread.threadContext.leftFileStart.offset || 0
+                } : undefined,
+                leftFileEnd: thread.threadContext.leftFileEnd ? {
+                    line: thread.threadContext.leftFileEnd.line || 0,
+                    offset: thread.threadContext.leftFileEnd.offset || 0
+                } : undefined
+            } : undefined,
+            isDeleted: thread.isDeleted || false,
+            publishedDate: thread.publishedDate?.toISOString() || '',
+            lastUpdatedDate: thread.lastUpdatedDate?.toISOString() || ''
+        };
+    }
+
+    /**
+     * Map Comment to our PRComment interface
+     */
+    private mapComment(comment: GitComment): PRComment {
+        return {
+            id: comment.id || 0,
+            content: comment.content || '',
+            author: {
+                displayName: comment.author?.displayName || '',
+                uniqueName: comment.author?.uniqueName || ''
+            },
+            publishedDate: comment.publishedDate?.toISOString() || '',
+            lastUpdatedDate: comment.lastUpdatedDate?.toISOString() || '',
+            isDeleted: comment.isDeleted || false,
+            commentType: this.mapCommentType(comment.commentType)
+        };
+    }
+
+    /**
+     * Map CommentThreadStatus enum to string
+     */
+    private mapThreadStatus(status: CommentThreadStatus | undefined): string {
+        switch (status) {
+            case CommentThreadStatus.Active:
+                return 'active';
+            case CommentThreadStatus.Fixed:
+                return 'fixed';
+            case CommentThreadStatus.WontFix:
+                return 'wontFix';
+            case CommentThreadStatus.Closed:
+                return 'closed';
+            case CommentThreadStatus.ByDesign:
+                return 'byDesign';
+            case CommentThreadStatus.Pending:
+                return 'pending';
+            default:
+                return 'unknown';
+        }
+    }
+
+    /**
+     * Map CommentType enum to string
+     */
+    private mapCommentType(type: CommentType | undefined): string {
+        switch (type) {
+            case CommentType.Text:
+                return 'text';
+            case CommentType.CodeChange:
+                return 'codeChange';
+            case CommentType.System:
+                return 'system';
+            default:
+                return 'unknown';
+        }
     }
 }
