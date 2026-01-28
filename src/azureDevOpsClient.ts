@@ -1,4 +1,8 @@
-import axios, { AxiosInstance } from 'axios';
+import * as azdev from 'azure-devops-node-api';
+import * as GitApi from 'azure-devops-node-api/GitApi';
+import * as BuildApi from 'azure-devops-node-api/BuildApi';
+import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType } from 'azure-devops-node-api/interfaces/GitInterfaces';
+import { Build, BuildDefinitionReference, BuildStatus, BuildResult } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 
 export interface AzureDevOpsConfig {
     organizationUrl: string;
@@ -85,24 +89,38 @@ export interface DiffLine {
 }
 
 export class AzureDevOpsClient {
-    private axiosInstance: AxiosInstance;
+    private connection: azdev.WebApi;
     private config: AzureDevOpsConfig;
+    private gitApi: GitApi.IGitApi | undefined;
+    private buildApi: BuildApi.IBuildApi | undefined;
     private repositoryId: string | undefined;
 
     constructor(config: AzureDevOpsConfig) {
         this.config = config;
 
-        // Create axios instance with basic auth using PAT
-        this.axiosInstance = axios.create({
-            baseURL: `${config.organizationUrl}/${config.project}/_apis`,
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            auth: {
-                username: '',
-                password: config.pat
-            }
-        });
+        // Create connection using PAT authentication
+        const authHandler = azdev.getPersonalAccessTokenHandler(config.pat);
+        this.connection = new azdev.WebApi(config.organizationUrl, authHandler);
+    }
+
+    /**
+     * Get the Git API client
+     */
+    private async getGitApi(): Promise<GitApi.IGitApi> {
+        if (!this.gitApi) {
+            this.gitApi = await this.connection.getGitApi();
+        }
+        return this.gitApi;
+    }
+
+    /**
+     * Get the Build API client
+     */
+    private async getBuildApi(): Promise<BuildApi.IBuildApi> {
+        if (!this.buildApi) {
+            this.buildApi = await this.connection.getBuildApi();
+        }
+        return this.buildApi;
     }
 
     /**
@@ -114,15 +132,12 @@ export class AzureDevOpsClient {
         }
 
         try {
-            const response = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}`,
-                {
-                    params: {
-                        'api-version': '7.0'
-                    }
-                }
-            );
-            this.repositoryId = response.data.id as string;
+            const gitApi = await this.getGitApi();
+            const repo = await gitApi.getRepository(this.config.repository, this.config.project);
+            if (!repo || !repo.id) {
+                throw new Error('Repository not found');
+            }
+            this.repositoryId = repo.id;
             return this.repositoryId;
         } catch (error) {
             throw this.handleError(error, 'Failed to fetch repository details');
@@ -134,16 +149,19 @@ export class AzureDevOpsClient {
      */
     async getPullRequests(status: 'active' | 'completed' | 'all' = 'active'): Promise<PullRequest[]> {
         try {
-            const response = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/pullrequests`,
-                {
-                    params: {
-                        'api-version': '7.0',
-                        'searchCriteria.status': status
-                    }
-                }
+            const gitApi = await this.getGitApi();
+
+            const searchCriteria: GitPullRequestSearchCriteria = {
+                status: this.mapStatusToEnum(status)
+            };
+
+            const prs = await gitApi.getPullRequests(
+                this.config.repository,
+                searchCriteria,
+                this.config.project
             );
-            return response.data.value;
+
+            return (prs || []).map(pr => this.mapPullRequest(pr));
         } catch (error) {
             throw this.handleError(error, 'Failed to fetch pull requests');
         }
@@ -154,15 +172,13 @@ export class AzureDevOpsClient {
      */
     async getPullRequest(pullRequestId: number): Promise<PullRequest> {
         try {
-            const response = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}`,
-                {
-                    params: {
-                        'api-version': '7.0'
-                    }
-                }
+            const gitApi = await this.getGitApi();
+            const pr = await gitApi.getPullRequest(
+                this.config.repository,
+                pullRequestId,
+                this.config.project
             );
-            return response.data;
+            return this.mapPullRequest(pr);
         } catch (error) {
             throw this.handleError(error, `Failed to fetch pull request ${pullRequestId}`);
         }
@@ -173,21 +189,22 @@ export class AzureDevOpsClient {
      */
     async createPullRequest(params: CreatePullRequestParams): Promise<PullRequest> {
         try {
-            const response = await this.axiosInstance.post(
-                `/git/repositories/${this.config.repository}/pullrequests`,
-                {
-                    sourceRefName: params.sourceRefName,
-                    targetRefName: params.targetRefName,
-                    title: params.title,
-                    description: params.description
-                },
-                {
-                    params: {
-                        'api-version': '7.0'
-                    }
-                }
+            const gitApi = await this.getGitApi();
+
+            const prToCreate: GitPullRequest = {
+                sourceRefName: params.sourceRefName,
+                targetRefName: params.targetRefName,
+                title: params.title,
+                description: params.description
+            };
+
+            const pr = await gitApi.createPullRequest(
+                prToCreate,
+                this.config.repository,
+                this.config.project
             );
-            return response.data;
+
+            return this.mapPullRequest(pr);
         } catch (error) {
             throw this.handleError(error, 'Failed to create pull request');
         }
@@ -198,37 +215,40 @@ export class AzureDevOpsClient {
      */
     async getPullRequestPipelines(pullRequestId: number): Promise<PipelineRun[]> {
         try {
-            // Get repository GUID (required by Build API for TfsGit repositories)
+            const buildApi = await this.getBuildApi();
             const repoId = await this.getRepositoryId();
 
-            // Get builds associated with the PR
-            const response = await this.axiosInstance.get(
-                `/build/builds`,
-                {
-                    params: {
-                        'api-version': '7.0',
-                        'repositoryId': repoId,
-                        'repositoryType': 'TfsGit'
-                    }
-                }
+            const builds = await buildApi.getBuilds(
+                this.config.project,
+                undefined, // definitions
+                undefined, // queues
+                undefined, // buildNumber
+                undefined, // minTime
+                undefined, // maxTime
+                undefined, // requestedFor
+                undefined, // reasonFilter
+                undefined, // statusFilter
+                undefined, // resultFilter
+                undefined, // tagFilters
+                undefined, // properties
+                undefined, // top
+                undefined, // continuationToken
+                undefined, // maxBuildsPerDefinition
+                undefined, // deletedFilter
+                undefined, // queryOrder
+                undefined, // branchName
+                undefined, // buildIds
+                repoId,    // repositoryId
+                'TfsGit'   // repositoryType
             );
 
             // Filter builds related to the PR
-            const builds = response.data.value;
-            const prBuilds = builds.filter((build: any) => {
+            const prBuilds = (builds || []).filter((build: Build) => {
                 return build.triggerInfo &&
                        build.triggerInfo['pr.number'] === pullRequestId.toString();
             });
 
-            return prBuilds.map((build: any) => ({
-                id: build.id,
-                name: build.definition.name,
-                state: build.status,
-                result: build.result || 'pending',
-                createdDate: build.queueTime,
-                finishedDate: build.finishTime,
-                url: build._links.web.href
-            }));
+            return prBuilds.map((build: Build) => this.mapBuildToRun(build));
         } catch (error) {
             throw this.handleError(error, `Failed to fetch pipelines for PR ${pullRequestId}`);
         }
@@ -239,18 +259,13 @@ export class AzureDevOpsClient {
      */
     async getPipelines(): Promise<Pipeline[]> {
         try {
-            const response = await this.axiosInstance.get(
-                `/build/definitions`,
-                {
-                    params: {
-                        'api-version': '7.0'
-                    }
-                }
-            );
-            return response.data.value.map((pipeline: any) => ({
-                id: pipeline.id,
-                name: pipeline.name,
-                url: pipeline._links.web.href
+            const buildApi = await this.getBuildApi();
+            const definitions = await buildApi.getDefinitions(this.config.project);
+
+            return (definitions || []).map((def: BuildDefinitionReference) => ({
+                id: def.id!,
+                name: def.name || '',
+                url: def._links?.web?.href || ''
             }));
         } catch (error) {
             throw this.handleError(error, 'Failed to fetch pipelines');
@@ -262,26 +277,25 @@ export class AzureDevOpsClient {
      */
     async getPipelineRuns(pipelineId: number, top: number = 10): Promise<PipelineRun[]> {
         try {
-            const response = await this.axiosInstance.get(
-                `/build/builds`,
-                {
-                    params: {
-                        'api-version': '7.0',
-                        'definitions': pipelineId,
-                        '$top': top
-                    }
-                }
+            const buildApi = await this.getBuildApi();
+
+            const builds = await buildApi.getBuilds(
+                this.config.project,
+                [pipelineId], // definitions
+                undefined,    // queues
+                undefined,    // buildNumber
+                undefined,    // minTime
+                undefined,    // maxTime
+                undefined,    // requestedFor
+                undefined,    // reasonFilter
+                undefined,    // statusFilter
+                undefined,    // resultFilter
+                undefined,    // tagFilters
+                undefined,    // properties
+                top           // top
             );
 
-            return response.data.value.map((build: any) => ({
-                id: build.id,
-                name: build.definition.name,
-                state: build.status,
-                result: build.result || 'pending',
-                createdDate: build.queueTime,
-                finishedDate: build.finishTime,
-                url: build._links.web.href
-            }));
+            return (builds || []).map((build: Build) => this.mapBuildToRun(build));
         } catch (error) {
             throw this.handleError(error, `Failed to fetch runs for pipeline ${pipelineId}`);
         }
@@ -292,16 +306,14 @@ export class AzureDevOpsClient {
      */
     async getBranches(): Promise<string[]> {
         try {
-            const response = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/refs`,
-                {
-                    params: {
-                        'api-version': '7.0',
-                        'filter': 'heads/'
-                    }
-                }
+            const gitApi = await this.getGitApi();
+            const refs = await gitApi.getRefs(
+                this.config.repository,
+                this.config.project,
+                'heads/'
             );
-            return response.data.value.map((ref: any) => ref.name);
+
+            return (refs || []).map((ref: GitRef) => ref.name || '');
         } catch (error) {
             throw this.handleError(error, 'Failed to fetch branches');
         }
@@ -312,18 +324,16 @@ export class AzureDevOpsClient {
      */
     async getPullRequestChanges(pullRequestId: number): Promise<PullRequestChange[]> {
         try {
+            const gitApi = await this.getGitApi();
+
             // First get the iterations to find the latest one
-            const iterationsResponse = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}/iterations`,
-                {
-                    params: {
-                        'api-version': '7.0'
-                    }
-                }
+            const iterations = await gitApi.getPullRequestIterations(
+                this.config.repository,
+                pullRequestId,
+                this.config.project
             );
 
-            const iterations = iterationsResponse.data.value;
-            if (iterations.length === 0) {
+            if (!iterations || iterations.length === 0) {
                 return [];
             }
 
@@ -331,16 +341,20 @@ export class AzureDevOpsClient {
             const latestIteration = iterations[iterations.length - 1];
 
             // Get changes for the latest iteration
-            const changesResponse = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}/iterations/${latestIteration.id}/changes`,
-                {
-                    params: {
-                        'api-version': '7.0'
-                    }
-                }
+            const changes = await gitApi.getPullRequestIterationChanges(
+                this.config.repository,
+                pullRequestId,
+                latestIteration.id!,
+                this.config.project
             );
 
-            return changesResponse.data.changeEntries || [];
+            return (changes?.changeEntries || []).map((entry: any) => ({
+                changeId: entry.changeId || 0,
+                changeType: this.mapChangeType(entry.changeType),
+                item: {
+                    path: entry.item?.path || ''
+                }
+            }));
         } catch (error) {
             throw this.handleError(error, `Failed to fetch changes for PR ${pullRequestId}`);
         }
@@ -351,19 +365,15 @@ export class AzureDevOpsClient {
      */
     async getPullRequestDiffs(pullRequestId: number): Promise<FileDiff[]> {
         try {
+            const gitApi = await this.getGitApi();
+
             // Get the pull request details
-            const prResponse = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/pullrequests/${pullRequestId}`,
-                {
-                    params: {
-                        'api-version': '7.1-preview.1'
-                    }
-                }
+            const pr = await gitApi.getPullRequest(
+                this.config.repository,
+                pullRequestId,
+                this.config.project
             );
 
-            const pr = prResponse.data;
-
-            // Use the source and target refs directly
             const sourceRef = pr.sourceRefName;
             const targetRef = pr.targetRefName;
 
@@ -372,21 +382,26 @@ export class AzureDevOpsClient {
             }
 
             // Get the diff between target and source branches
-            const diffResponse = await this.axiosInstance.get(
-                `/git/repositories/${this.config.repository}/diffs/commits`,
-                {
-                    params: {
-                        'api-version': '7.1-preview.1',
-                        'baseVersion': targetRef.replace('refs/heads/', ''),
-                        'baseVersionType': 'branch',
-                        'targetVersion': sourceRef.replace('refs/heads/', ''),
-                        'targetVersionType': 'branch',
-                        'diffCommonCommit': true
-                    }
-                }
+            const baseVersionDescriptor: GitVersionDescriptor = {
+                version: targetRef.replace('refs/heads/', ''),
+                versionType: GitVersionType.Branch
+            };
+            const targetVersionDescriptor: GitVersionDescriptor = {
+                version: sourceRef.replace('refs/heads/', ''),
+                versionType: GitVersionType.Branch
+            };
+
+            const diffResult = await gitApi.getCommitDiffs(
+                this.config.repository,
+                this.config.project,
+                true, // diffCommonCommit
+                undefined, // top
+                undefined, // skip
+                baseVersionDescriptor,
+                targetVersionDescriptor
             );
 
-            const changes = diffResponse.data.changes || [];
+            const changes = diffResult?.changes || [];
             const fileDiffs: FileDiff[] = [];
 
             // Process each file change
@@ -395,52 +410,49 @@ export class AzureDevOpsClient {
                     continue;
                 }
 
-                // Get the actual diff for this file
-                const filePath = change.item.path;
+                const filePath = change.item.path || '';
                 const blocks: DiffBlock[] = [];
+                const changeType = this.mapChangeType(change.changeType);
 
                 let baseContent = '';
                 let targetContent = '';
 
                 try {
-                    // Fetch file content from both versions for comparison
-                    const baseVersionParams = {
-                        'api-version': '7.0',
-                        'path': filePath,
-                        'versionDescriptor.version': targetRef.replace('refs/heads/', ''),
-                        'versionDescriptor.versionType': 'branch',
-                        '$format': 'text'
-                    };
-
-                    const targetVersionParams = {
-                        'api-version': '7.0',
-                        'path': filePath,
-                        'versionDescriptor.version': sourceRef.replace('refs/heads/', ''),
-                        'versionDescriptor.versionType': 'branch',
-                        '$format': 'text'
-                    };
-
                     // Fetch base version (target branch)
-                    if (change.changeType !== 'add') {
+                    if (changeType !== 'add') {
                         try {
-                            const baseResponse = await this.axiosInstance.get(
-                                `/git/repositories/${this.config.repository}/items`,
-                                { params: baseVersionParams }
+                            const baseItem = await gitApi.getItemContent(
+                                this.config.repository,
+                                filePath,
+                                this.config.project,
+                                undefined, // scopePath
+                                undefined, // recursionLevel
+                                undefined, // includeContentMetadata
+                                undefined, // latestProcessedChange
+                                undefined, // download
+                                baseVersionDescriptor
                             );
-                            baseContent = baseResponse.data || '';
+                            baseContent = await this.streamToString(baseItem);
                         } catch {
                             baseContent = '';
                         }
                     }
 
                     // Fetch target version (source branch)
-                    if (change.changeType !== 'delete') {
+                    if (changeType !== 'delete') {
                         try {
-                            const targetResponse = await this.axiosInstance.get(
-                                `/git/repositories/${this.config.repository}/items`,
-                                { params: targetVersionParams }
+                            const targetItem = await gitApi.getItemContent(
+                                this.config.repository,
+                                filePath,
+                                this.config.project,
+                                undefined, // scopePath
+                                undefined, // recursionLevel
+                                undefined, // includeContentMetadata
+                                undefined, // latestProcessedChange
+                                undefined, // download
+                                targetVersionDescriptor
                             );
-                            targetContent = targetResponse.data || '';
+                            targetContent = await this.streamToString(targetItem);
                         } catch {
                             targetContent = '';
                         }
@@ -450,7 +462,7 @@ export class AzureDevOpsClient {
                     const diffLines = this.generateDiff(baseContent, targetContent);
                     if (diffLines.length > 0) {
                         blocks.push({
-                            changeType: change.changeType,
+                            changeType: changeType,
                             mLine: 0,
                             mLinesCount: diffLines.filter(l => l.lineType === 'added').length,
                             oLine: 0,
@@ -464,7 +476,7 @@ export class AzureDevOpsClient {
 
                 fileDiffs.push({
                     path: filePath,
-                    changeType: change.changeType,
+                    changeType: changeType,
                     originalContent: baseContent,
                     modifiedContent: targetContent,
                     blocks
@@ -474,6 +486,149 @@ export class AzureDevOpsClient {
             return fileDiffs;
         } catch (error) {
             throw this.handleError(error, `Failed to fetch diffs for PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Convert a readable stream to string
+     */
+    private async streamToString(stream: NodeJS.ReadableStream): Promise<string> {
+        const chunks: Buffer[] = [];
+        return new Promise((resolve, reject) => {
+            stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+            stream.on('error', (err) => reject(err));
+            stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        });
+    }
+
+    /**
+     * Map status string to PullRequestStatus enum
+     */
+    private mapStatusToEnum(status: 'active' | 'completed' | 'all'): PullRequestStatus {
+        switch (status) {
+            case 'active':
+                return PullRequestStatus.Active;
+            case 'completed':
+                return PullRequestStatus.Completed;
+            case 'all':
+                return PullRequestStatus.All;
+            default:
+                return PullRequestStatus.Active;
+        }
+    }
+
+    /**
+     * Map GitPullRequest to our PullRequest interface
+     */
+    private mapPullRequest(pr: GitPullRequest): PullRequest {
+        return {
+            pullRequestId: pr.pullRequestId || 0,
+            title: pr.title || '',
+            description: pr.description || '',
+            sourceRefName: pr.sourceRefName || '',
+            targetRefName: pr.targetRefName || '',
+            status: this.mapPullRequestStatus(pr.status),
+            createdBy: {
+                displayName: pr.createdBy?.displayName || '',
+                uniqueName: pr.createdBy?.uniqueName || ''
+            },
+            creationDate: pr.creationDate?.toISOString() || '',
+            url: pr._links?.web?.href || ''
+        };
+    }
+
+    /**
+     * Map PullRequestStatus enum to string
+     */
+    private mapPullRequestStatus(status: PullRequestStatus | undefined): string {
+        switch (status) {
+            case PullRequestStatus.Active:
+                return 'active';
+            case PullRequestStatus.Completed:
+                return 'completed';
+            case PullRequestStatus.Abandoned:
+                return 'abandoned';
+            case PullRequestStatus.NotSet:
+                return 'notSet';
+            default:
+                return 'unknown';
+        }
+    }
+
+    /**
+     * Map Build to PipelineRun interface
+     */
+    private mapBuildToRun(build: Build): PipelineRun {
+        return {
+            id: build.id || 0,
+            name: build.definition?.name || '',
+            state: this.mapBuildStatus(build.status),
+            result: this.mapBuildResult(build.result),
+            createdDate: build.queueTime?.toISOString() || '',
+            finishedDate: build.finishTime?.toISOString() || '',
+            url: build._links?.web?.href || ''
+        };
+    }
+
+    /**
+     * Map BuildStatus enum to string
+     */
+    private mapBuildStatus(status: BuildStatus | undefined): string {
+        switch (status) {
+            case BuildStatus.None:
+                return 'none';
+            case BuildStatus.InProgress:
+                return 'inProgress';
+            case BuildStatus.Completed:
+                return 'completed';
+            case BuildStatus.Cancelling:
+                return 'cancelling';
+            case BuildStatus.Postponed:
+                return 'postponed';
+            case BuildStatus.NotStarted:
+                return 'notStarted';
+            case BuildStatus.All:
+                return 'all';
+            default:
+                return 'unknown';
+        }
+    }
+
+    /**
+     * Map BuildResult enum to string
+     */
+    private mapBuildResult(result: BuildResult | undefined): string {
+        switch (result) {
+            case BuildResult.None:
+                return 'pending';
+            case BuildResult.Succeeded:
+                return 'succeeded';
+            case BuildResult.PartiallySucceeded:
+                return 'partiallySucceeded';
+            case BuildResult.Failed:
+                return 'failed';
+            case BuildResult.Canceled:
+                return 'canceled';
+            default:
+                return 'pending';
+        }
+    }
+
+    /**
+     * Map VersionControlChangeType to string
+     */
+    private mapChangeType(changeType: VersionControlChangeType | undefined): string {
+        switch (changeType) {
+            case VersionControlChangeType.Add:
+                return 'add';
+            case VersionControlChangeType.Edit:
+                return 'edit';
+            case VersionControlChangeType.Delete:
+                return 'delete';
+            case VersionControlChangeType.Rename:
+                return 'rename';
+            default:
+                return 'none';
         }
     }
 
@@ -524,20 +679,8 @@ export class AzureDevOpsClient {
         return lines;
     }
 
-    private getChangeTypeString(changeType: number): string {
-        switch (changeType) {
-            case 1: return 'delete';
-            case 2: return 'add';
-            case 3: return 'edit';
-            default: return 'none';
-        }
-    }
-
     private handleError(error: any, message: string): Error {
-        if (axios.isAxiosError(error)) {
-            const details = error.response?.data?.message || error.message;
-            return new Error(`${message}: ${details}`);
-        }
-        return new Error(`${message}: ${error.message || 'Unknown error'}`);
+        const errorMessage = error?.message || error?.toString() || 'Unknown error';
+        return new Error(`${message}: ${errorMessage}`);
     }
 }
