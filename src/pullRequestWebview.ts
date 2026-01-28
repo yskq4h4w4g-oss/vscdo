@@ -157,6 +157,34 @@ export class PullRequestWebviewPanel {
                             vscode.window.showErrorMessage(`Failed to add reply: ${errorMessage}`);
                         }
                         return;
+                    case 'updateCommentStatus':
+                        try {
+                            const updatedThread = await this.client.updateCommentThreadStatus(
+                                this.pullRequest.pullRequestId,
+                                message.threadId,
+                                message.status
+                            );
+                            // Update local thread with the new status
+                            const threadToUpdate = this.commentThreads.find(t => t.id === message.threadId);
+                            if (threadToUpdate) {
+                                threadToUpdate.status = updatedThread.status;
+                            }
+                            this.panel.webview.postMessage({
+                                command: 'statusUpdated',
+                                threadId: message.threadId,
+                                status: updatedThread.status
+                            });
+                            vscode.window.showInformationMessage(`Comment status changed to ${updatedThread.status}`);
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            this.panel.webview.postMessage({
+                                command: 'statusError',
+                                threadId: message.threadId,
+                                error: errorMessage
+                            });
+                            vscode.window.showErrorMessage(`Failed to update status: ${errorMessage}`);
+                        }
+                        return;
                 }
             },
             null,
@@ -699,6 +727,23 @@ export class PullRequestWebviewPanel {
                     background-color: var(--vscode-charts-green);
                     color: white;
                 }
+                .status-dropdown {
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    border: 1px solid var(--vscode-dropdown-border);
+                    background-color: var(--vscode-dropdown-background);
+                    color: var(--vscode-dropdown-foreground);
+                    cursor: pointer;
+                    text-transform: uppercase;
+                }
+                .status-dropdown:focus {
+                    outline: 1px solid var(--vscode-focusBorder);
+                }
+                .status-dropdown:disabled {
+                    opacity: 0.6;
+                    cursor: not-allowed;
+                }
                 .comment-item {
                     padding: 12px;
                     border-bottom: 1px solid var(--vscode-panel-border);
@@ -1027,13 +1072,19 @@ export class PullRequestWebviewPanel {
                                 ? 'Line ' + thread.threadContext.leftFileStart.line + ' (original)'
                                 : 'File comment';
 
-                        const statusClass = thread.status === 'active' ? 'active' : 'resolved';
                         const threadClass = thread.status === 'active' ? '' : ' resolved';
 
                         html += '<div class="comment-thread' + threadClass + '" data-thread-id="' + thread.id + '">';
                         html += '<div class="comment-thread-header">';
                         html += '<span class="comment-line-info">' + lineInfo + '</span>';
-                        html += '<span class="comment-status ' + statusClass + '">' + thread.status + '</span>';
+                        html += '<select class="status-dropdown" data-thread-id="' + thread.id + '" onchange="updateThreadStatus(' + thread.id + ', this.value)">';
+                        html += '<option value="active"' + (thread.status === 'active' ? ' selected' : '') + '>Active</option>';
+                        html += '<option value="fixed"' + (thread.status === 'fixed' ? ' selected' : '') + '>Fixed</option>';
+                        html += '<option value="wontFix"' + (thread.status === 'wontFix' ? ' selected' : '') + '>Won\\'t Fix</option>';
+                        html += '<option value="closed"' + (thread.status === 'closed' ? ' selected' : '') + '>Closed</option>';
+                        html += '<option value="byDesign"' + (thread.status === 'byDesign' ? ' selected' : '') + '>By Design</option>';
+                        html += '<option value="pending"' + (thread.status === 'pending' ? ' selected' : '') + '>Pending</option>';
+                        html += '</select>';
                         html += '</div>';
 
                         thread.comments.forEach(comment => {
@@ -1077,13 +1128,19 @@ export class PullRequestWebviewPanel {
 
                     let html = '';
                     threads.forEach(thread => {
-                        const statusClass = thread.status === 'active' ? 'active' : 'resolved';
                         const threadClass = thread.status === 'active' ? '' : ' resolved';
 
                         html += '<div class="general-comment-thread' + threadClass + '" data-thread-id="' + thread.id + '">';
                         html += '<div class="general-comment-header">';
                         html += '<span>General comment</span>';
-                        html += '<span class="comment-status ' + statusClass + '">' + thread.status + '</span>';
+                        html += '<select class="status-dropdown" data-thread-id="' + thread.id + '" onchange="updateThreadStatus(' + thread.id + ', this.value)">';
+                        html += '<option value="active"' + (thread.status === 'active' ? ' selected' : '') + '>Active</option>';
+                        html += '<option value="fixed"' + (thread.status === 'fixed' ? ' selected' : '') + '>Fixed</option>';
+                        html += '<option value="wontFix"' + (thread.status === 'wontFix' ? ' selected' : '') + '>Won\\'t Fix</option>';
+                        html += '<option value="closed"' + (thread.status === 'closed' ? ' selected' : '') + '>Closed</option>';
+                        html += '<option value="byDesign"' + (thread.status === 'byDesign' ? ' selected' : '') + '>By Design</option>';
+                        html += '<option value="pending"' + (thread.status === 'pending' ? ' selected' : '') + '>Pending</option>';
+                        html += '</select>';
                         html += '</div>';
 
                         thread.comments.forEach(comment => {
@@ -1212,6 +1269,20 @@ export class PullRequestWebviewPanel {
                     });
                 }
 
+                function updateThreadStatus(threadId, newStatus) {
+                    // Disable the dropdown while updating
+                    const dropdown = document.querySelector('select.status-dropdown[data-thread-id="' + threadId + '"]');
+                    if (dropdown) {
+                        dropdown.disabled = true;
+                    }
+
+                    vscode.postMessage({
+                        command: 'updateCommentStatus',
+                        threadId: threadId,
+                        status: newStatus
+                    });
+                }
+
                 function escapeHtml(text) {
                     const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
                     return text.replace(/[&<>"']/g, function(m) { return map[m]; });
@@ -1304,6 +1375,40 @@ export class PullRequestWebviewPanel {
                                 btn.disabled = false;
                                 btn.textContent = btn.closest('#inline-comment-input') ? 'Comment' : 'Reply';
                             });
+                            break;
+                        }
+                        case 'statusUpdated': {
+                            const thread = allThreads.find(t => t.id === message.threadId);
+                            if (thread) {
+                                thread.status = message.status;
+                            }
+                            // Re-enable dropdown
+                            const dropdown = document.querySelector('select.status-dropdown[data-thread-id="' + message.threadId + '"]');
+                            if (dropdown) {
+                                dropdown.disabled = false;
+                                dropdown.value = message.status;
+                            }
+                            // Update thread visual state (resolved opacity)
+                            const threadElement = document.querySelector('.comment-thread[data-thread-id="' + message.threadId + '"], .general-comment-thread[data-thread-id="' + message.threadId + '"]');
+                            if (threadElement) {
+                                if (message.status === 'active') {
+                                    threadElement.classList.remove('resolved');
+                                } else {
+                                    threadElement.classList.add('resolved');
+                                }
+                            }
+                            break;
+                        }
+                        case 'statusError': {
+                            // Re-enable dropdown and revert to previous value
+                            const thread = allThreads.find(t => t.id === message.threadId);
+                            const dropdown = document.querySelector('select.status-dropdown[data-thread-id="' + message.threadId + '"]');
+                            if (dropdown) {
+                                dropdown.disabled = false;
+                                if (thread) {
+                                    dropdown.value = thread.status;
+                                }
+                            }
                             break;
                         }
                     }

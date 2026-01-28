@@ -325,6 +325,41 @@ export class AzureDevOpsClient {
     }
 
     /**
+     * Update the status of a comment thread
+     * @param pullRequestId The ID of the pull request
+     * @param threadId The ID of the thread to update
+     * @param status The new status ('active', 'fixed', 'wontFix', 'closed', 'byDesign', 'pending')
+     */
+    async updateCommentThreadStatus(
+        pullRequestId: number,
+        threadId: number,
+        status: string
+    ): Promise<CommentThread> {
+        try {
+            const gitApi = await this.getGitApi();
+
+            // Map string status to enum
+            const statusEnum = this.mapStringToThreadStatus(status);
+
+            const thread: GitPullRequestCommentThread = {
+                status: statusEnum
+            };
+
+            const result = await gitApi.updateThread(
+                thread,
+                this.config.repository,
+                pullRequestId,
+                threadId,
+                this.config.project
+            );
+
+            return this.mapCommentThread(result);
+        } catch (error) {
+            throw this.handleError(error, `Failed to update thread ${threadId} status`);
+        }
+    }
+
+    /**
      * Reply to an existing comment thread
      * @param pullRequestId The ID of the pull request
      * @param threadId The ID of the thread to reply to
@@ -1135,6 +1170,28 @@ export class AzureDevOpsClient {
                 return 'pending';
             default:
                 return 'unknown';
+        }
+    }
+
+    /**
+     * Map string status to CommentThreadStatus enum
+     */
+    private mapStringToThreadStatus(status: string): CommentThreadStatus {
+        switch (status) {
+            case 'active':
+                return CommentThreadStatus.Active;
+            case 'fixed':
+                return CommentThreadStatus.Fixed;
+            case 'wontFix':
+                return CommentThreadStatus.WontFix;
+            case 'closed':
+                return CommentThreadStatus.Closed;
+            case 'byDesign':
+                return CommentThreadStatus.ByDesign;
+            case 'pending':
+                return CommentThreadStatus.Pending;
+            default:
+                return CommentThreadStatus.Active;
         }
     }
 
