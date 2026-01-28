@@ -2,7 +2,7 @@
   "name": "azure-devops-pr-manager",
   "displayName": "Azure DevOps PR Manager",
   "description": "Manage Azure DevOps pull requests and monitor pipeline status",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -41,6 +41,16 @@
       {
         "command": "azureDevOps.clearCredentials",
         "title": "Azure DevOps: Clear Stored Credentials"
+      },
+      {
+        "command": "azureDevOps.approvePullRequest",
+        "title": "Approve Pull Request",
+        "icon": "$(check)"
+      },
+      {
+        "command": "azureDevOps.rejectPullRequest",
+        "title": "Reject Pull Request",
+        "icon": "$(x)"
       }
     ],
     "viewsContainers": {
@@ -81,6 +91,16 @@
         {
           "command": "azureDevOps.openPullRequestInBrowser",
           "when": "view == azureDevOpsPullRequests && viewItem == pullRequest"
+        },
+        {
+          "command": "azureDevOps.approvePullRequest",
+          "when": "view == azureDevOpsPullRequests && viewItem == pullRequest",
+          "group": "inline"
+        },
+        {
+          "command": "azureDevOps.rejectPullRequest",
+          "when": "view == azureDevOpsPullRequests && viewItem == pullRequest",
+          "group": "inline"
         }
       ]
     },

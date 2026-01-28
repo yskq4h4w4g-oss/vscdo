@@ -77,7 +77,7 @@ class PullRequestTreeItem extends vscode.TreeItem {
     ) {
         super(pullRequest.title, vscode.TreeItemCollapsibleState.Collapsed);
 
-        this.description = `#${pullRequest.pullRequestId} - ${pullRequest.createdBy.displayName}`;
+        this.description = this.createDescription();
         this.tooltip = this.createTooltip();
         this.contextValue = 'pullRequest';
         this.iconPath = this.getIcon();
@@ -90,9 +90,43 @@ class PullRequestTreeItem extends vscode.TreeItem {
         };
     }
 
+    private createDescription(): string {
+        const pr = this.pullRequest;
+        const reviewerSummary = this.getReviewerSummary();
+        return `#${pr.pullRequestId} - ${pr.createdBy.displayName}${reviewerSummary ? ` | ${reviewerSummary}` : ''}`;
+    }
+
+    private getReviewerSummary(): string {
+        const reviewers = this.pullRequest.reviewers || [];
+        if (reviewers.length === 0) {
+            return '';
+        }
+
+        const approved = reviewers.filter(r => r.vote >= 10).length;
+        const approvedWithSuggestions = reviewers.filter(r => r.vote >= 5 && r.vote < 10).length;
+        const waiting = reviewers.filter(r => r.vote < 0 && r.vote > -10).length;
+        const rejected = reviewers.filter(r => r.vote <= -10).length;
+
+        const parts: string[] = [];
+        if (approved > 0) {
+            parts.push(`${approved} approved`);
+        }
+        if (approvedWithSuggestions > 0) {
+            parts.push(`${approvedWithSuggestions} with suggestions`);
+        }
+        if (waiting > 0) {
+            parts.push(`${waiting} waiting`);
+        }
+        if (rejected > 0) {
+            parts.push(`${rejected} rejected`);
+        }
+
+        return parts.join(', ') || `${reviewers.length} reviewer${reviewers.length === 1 ? '' : 's'}`;
+    }
+
     private createTooltip(): string {
         const pr = this.pullRequest;
-        return [
+        const lines = [
             `Pull Request #${pr.pullRequestId}`,
             `Title: ${pr.title}`,
             `Author: ${pr.createdBy.displayName}`,
@@ -100,7 +134,34 @@ class PullRequestTreeItem extends vscode.TreeItem {
             `Target: ${pr.targetRefName.replace('refs/heads/', '')}`,
             `Status: ${pr.status}`,
             `Created: ${new Date(pr.creationDate).toLocaleString()}`
-        ].join('\n');
+        ];
+
+        // Add reviewer info to tooltip
+        const reviewers = pr.reviewers || [];
+        if (reviewers.length > 0) {
+            lines.push('');
+            lines.push('Reviewers:');
+            for (const r of reviewers) {
+                const voteLabel = this.getVoteLabel(r.vote);
+                lines.push(`  ${r.displayName}: ${voteLabel}`);
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    private getVoteLabel(vote: number): string {
+        if (vote >= 10) {
+            return 'Approved';
+        } else if (vote >= 5) {
+            return 'Approved with suggestions';
+        } else if (vote === 0) {
+            return 'No vote';
+        } else if (vote > -10) {
+            return 'Waiting for author';
+        } else {
+            return 'Rejected';
+        }
     }
 
     private getIcon(): vscode.ThemeIcon {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff, FileInfo } from './azureDevOpsClient';
+import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff, FileInfo, Reviewer, CurrentUser } from './azureDevOpsClient';
 
 export class PullRequestWebviewPanel {
     private static currentPanel: PullRequestWebviewPanel | undefined;
@@ -10,6 +10,7 @@ export class PullRequestWebviewPanel {
     private repository: string;
     private sourceRef: string = '';
     private targetRef: string = '';
+    private currentUser: CurrentUser | undefined;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -72,6 +73,18 @@ export class PullRequestWebviewPanel {
                                 index: message.index,
                                 error: errorMessage
                             });
+                        }
+                        return;
+                    case 'vote':
+                        try {
+                            await this.client.votePullRequest(this.pullRequest.pullRequestId, message.vote);
+                            vscode.window.showInformationMessage(this.getVoteMessage(message.vote));
+                            // Refresh the PR to show updated vote
+                            this.pullRequest = await this.client.getPullRequest(this.pullRequest.pullRequestId);
+                            this.update();
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            vscode.window.showErrorMessage(`Failed to vote: ${errorMessage}`);
                         }
                         return;
                 }
@@ -140,11 +153,14 @@ export class PullRequestWebviewPanel {
         this.panel.title = `PR #${this.pullRequest.pullRequestId}`;
 
         try {
-            // Fetch the latest pipelines and file list (not full diffs - those are loaded on demand)
-            const [pipelines, fileListResult] = await Promise.all([
+            // Fetch the latest pipelines, file list, and current user
+            const [pipelines, fileListResult, currentUser] = await Promise.all([
                 this.client.getPullRequestPipelines(this.pullRequest.pullRequestId),
-                this.client.getPullRequestFileList(this.pullRequest.pullRequestId)
+                this.client.getPullRequestFileList(this.pullRequest.pullRequestId),
+                this.client.getCurrentUser().catch(() => undefined)
             ]);
+
+            this.currentUser = currentUser;
 
             // Store refs for on-demand diff fetching
             this.sourceRef = fileListResult.sourceRef;
@@ -432,6 +448,142 @@ export class PullRequestWebviewPanel {
                     text-align: center;
                     color: var(--vscode-descriptionForeground);
                 }
+                .reviewers-section {
+                    margin: 20px 0;
+                    padding: 20px;
+                    background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    border-radius: 8px;
+                    border: 2px solid var(--vscode-panel-border);
+                }
+                .reviewers-section h2 {
+                    margin-top: 0;
+                    margin-bottom: 15px;
+                    font-size: 18px;
+                }
+                .reviewers-list {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                }
+                .reviewer-item {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 10px 15px;
+                    background-color: var(--vscode-editor-background);
+                    border-radius: 6px;
+                    border-left: 4px solid var(--vscode-panel-border);
+                }
+                .reviewer-item.approved {
+                    border-left-color: var(--vscode-charts-green);
+                }
+                .reviewer-item.approved-suggestions {
+                    border-left-color: #8BC34A;
+                }
+                .reviewer-item.waiting {
+                    border-left-color: var(--vscode-charts-yellow);
+                }
+                .reviewer-item.rejected {
+                    border-left-color: var(--vscode-charts-red);
+                }
+                .reviewer-item.current-user {
+                    background-color: var(--vscode-list-hoverBackground);
+                }
+                .reviewer-info {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                .reviewer-name {
+                    font-weight: 500;
+                }
+                .required-badge {
+                    font-size: 10px;
+                    padding: 2px 6px;
+                    background-color: var(--vscode-charts-orange);
+                    color: white;
+                    border-radius: 3px;
+                    text-transform: uppercase;
+                }
+                .vote-badge {
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    font-weight: 500;
+                }
+                .vote-badge.approved {
+                    background-color: var(--vscode-charts-green);
+                    color: white;
+                }
+                .vote-badge.approved-suggestions {
+                    background-color: #8BC34A;
+                    color: white;
+                }
+                .vote-badge.no-vote {
+                    background-color: var(--vscode-badge-background);
+                    color: var(--vscode-badge-foreground);
+                }
+                .vote-badge.waiting {
+                    background-color: var(--vscode-charts-yellow);
+                    color: black;
+                }
+                .vote-badge.rejected {
+                    background-color: var(--vscode-charts-red);
+                    color: white;
+                }
+                .no-reviewers {
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                    padding: 10px;
+                    text-align: center;
+                }
+                .voting-section {
+                    margin-top: 15px;
+                    padding-top: 15px;
+                    border-top: 1px solid var(--vscode-panel-border);
+                }
+                .voting-section h3 {
+                    margin: 0 0 10px 0;
+                    font-size: 14px;
+                    color: var(--vscode-descriptionForeground);
+                }
+                .voting-buttons {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 8px;
+                }
+                .vote-btn {
+                    padding: 8px 16px;
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 13px;
+                    cursor: pointer;
+                    font-family: var(--vscode-font-family);
+                    transition: opacity 0.2s;
+                }
+                .vote-btn:hover {
+                    opacity: 0.85;
+                }
+                .vote-btn.approve {
+                    background-color: var(--vscode-charts-green);
+                    color: white;
+                }
+                .vote-btn.approve-suggestions {
+                    background-color: #8BC34A;
+                    color: white;
+                }
+                .vote-btn.waiting {
+                    background-color: var(--vscode-charts-yellow);
+                    color: black;
+                }
+                .vote-btn.reject {
+                    background-color: var(--vscode-charts-red);
+                    color: white;
+                }
+                .vote-btn.reset {
+                    background-color: var(--vscode-button-secondaryBackground);
+                    color: var(--vscode-button-secondaryForeground);
+                }
             </style>
         </head>
         <body>
@@ -472,6 +624,15 @@ export class PullRequestWebviewPanel {
             <h2>Description</h2>
             <div class="description">${this.escapeHtml(pr.description)}</div>
             ` : ''}
+
+            <div class="reviewers-section">
+                <h2>Reviewers</h2>
+                ${this.getReviewersHtml(pr.reviewers, this.currentUser?.id)}
+                <div class="voting-section">
+                    <h3>Cast Your Vote</h3>
+                    ${this.getVotingButtonsHtml()}
+                </div>
+            </div>
 
             <div class="changes">
                 <h2>File Changes (${files.length})</h2>
@@ -622,6 +783,14 @@ export class PullRequestWebviewPanel {
                     }
                 }
 
+                // Handle voting
+                function vote(voteValue) {
+                    vscode.postMessage({
+                        command: 'vote',
+                        vote: voteValue
+                    });
+                }
+
                 // Set up event listeners when DOM is ready
                 document.addEventListener('DOMContentLoaded', function() {
                     // Copy link button
@@ -629,6 +798,14 @@ export class PullRequestWebviewPanel {
                     if (copyLinkBtn) {
                         copyLinkBtn.addEventListener('click', copyLink);
                     }
+
+                    // Voting buttons
+                    document.querySelectorAll('.vote-btn').forEach(function(btn) {
+                        btn.addEventListener('click', function() {
+                            const voteValue = parseInt(btn.getAttribute('data-vote'), 10);
+                            vote(voteValue);
+                        });
+                    });
 
                     // Diff file headers - use event delegation
                     document.querySelectorAll('.diff-file-header').forEach(function(header) {
@@ -802,5 +979,88 @@ export class PullRequestWebviewPanel {
             text += possible.charAt(Math.floor(Math.random() * possible.length));
         }
         return text;
+    }
+
+    private getVoteMessage(vote: number): string {
+        switch (vote) {
+            case 10:
+                return 'Pull request approved';
+            case 5:
+                return 'Pull request approved with suggestions';
+            case 0:
+                return 'Vote reset';
+            case -5:
+                return 'Marked as waiting for author';
+            case -10:
+                return 'Pull request rejected';
+            default:
+                return 'Vote submitted';
+        }
+    }
+
+    private getVoteLabel(vote: number): string {
+        switch (vote) {
+            case 10:
+                return 'Approved';
+            case 5:
+                return 'Approved with suggestions';
+            case 0:
+                return 'No vote';
+            case -5:
+                return 'Waiting for author';
+            case -10:
+                return 'Rejected';
+            default:
+                return 'Unknown';
+        }
+    }
+
+    private getVoteClass(vote: number): string {
+        if (vote >= 10) {
+            return 'approved';
+        } else if (vote > 0) {
+            return 'approved-suggestions';
+        } else if (vote === 0) {
+            return 'no-vote';
+        } else if (vote > -10) {
+            return 'waiting';
+        } else {
+            return 'rejected';
+        }
+    }
+
+    private getReviewersHtml(reviewers: Reviewer[], currentUserId: string | undefined): string {
+        if (reviewers.length === 0) {
+            return '<div class="no-reviewers">No reviewers assigned</div>';
+        }
+
+        const reviewerItems = reviewers.map(reviewer => {
+            const voteClass = this.getVoteClass(reviewer.vote);
+            const voteLabel = this.getVoteLabel(reviewer.vote);
+            const isCurrentUser = currentUserId && reviewer.id === currentUserId;
+            const requiredBadge = reviewer.isRequired ? '<span class="required-badge">Required</span>' : '';
+
+            return `
+            <div class="reviewer-item ${voteClass}${isCurrentUser ? ' current-user' : ''}">
+                <div class="reviewer-info">
+                    <span class="reviewer-name">${this.escapeHtml(reviewer.displayName)}</span>
+                    ${requiredBadge}
+                </div>
+                <span class="vote-badge ${voteClass}">${voteLabel}</span>
+            </div>`;
+        }).join('');
+
+        return `<div class="reviewers-list">${reviewerItems}</div>`;
+    }
+
+    private getVotingButtonsHtml(): string {
+        return `
+        <div class="voting-buttons">
+            <button class="vote-btn approve" data-vote="10" title="Approve">Approve</button>
+            <button class="vote-btn approve-suggestions" data-vote="5" title="Approve with suggestions">Approve with suggestions</button>
+            <button class="vote-btn waiting" data-vote="-5" title="Wait for author">Wait for author</button>
+            <button class="vote-btn reject" data-vote="-10" title="Reject">Reject</button>
+            <button class="vote-btn reset" data-vote="0" title="Reset vote">Reset vote</button>
+        </div>`;
     }
 }

@@ -1,7 +1,7 @@
 import * as azdev from 'azure-devops-node-api';
 import * as GitApi from 'azure-devops-node-api/GitApi';
 import * as BuildApi from 'azure-devops-node-api/BuildApi';
-import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType } from 'azure-devops-node-api/interfaces/GitInterfaces';
+import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType, IdentityRefWithVote } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { Build, BuildDefinitionReference, BuildStatus, BuildResult } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 
 export interface AzureDevOpsConfig {
@@ -9,6 +9,17 @@ export interface AzureDevOpsConfig {
     project: string;
     repository: string;
     pat: string;
+}
+
+export interface Reviewer {
+    id: string;
+    displayName: string;
+    uniqueName: string;
+    imageUrl: string;
+    vote: number;
+    isRequired: boolean;
+    hasDeclined: boolean;
+    isFlagged: boolean;
 }
 
 export interface PullRequest {
@@ -24,6 +35,7 @@ export interface PullRequest {
     };
     creationDate: string;
     url: string;
+    reviewers: Reviewer[];
 }
 
 export interface Pipeline {
@@ -93,12 +105,19 @@ export interface DiffLine {
     mLine?: number;
 }
 
+export interface CurrentUser {
+    id: string;
+    displayName: string;
+    uniqueName: string;
+}
+
 export class AzureDevOpsClient {
     private connection: azdev.WebApi;
     private config: AzureDevOpsConfig;
     private gitApi: GitApi.IGitApi | undefined;
     private buildApi: BuildApi.IBuildApi | undefined;
     private repositoryId: string | undefined;
+    private currentUser: CurrentUser | undefined;
 
     constructor(config: AzureDevOpsConfig) {
         this.config = config;
@@ -146,6 +165,59 @@ export class AzureDevOpsClient {
             return this.repositoryId;
         } catch (error) {
             throw this.handleError(error, 'Failed to fetch repository details');
+        }
+    }
+
+    /**
+     * Get the current authenticated user
+     */
+    async getCurrentUser(): Promise<CurrentUser> {
+        if (this.currentUser) {
+            return this.currentUser;
+        }
+
+        try {
+            const connectionData = await this.connection.connect();
+            const user = connectionData.authenticatedUser;
+            if (!user || !user.id) {
+                throw new Error('Unable to get authenticated user');
+            }
+            this.currentUser = {
+                id: user.id,
+                displayName: user.providerDisplayName || '',
+                uniqueName: user.properties?.Account?.$value || ''
+            };
+            return this.currentUser;
+        } catch (error) {
+            throw this.handleError(error, 'Failed to get current user');
+        }
+    }
+
+    /**
+     * Vote on a pull request
+     * @param pullRequestId The ID of the pull request
+     * @param vote The vote value: 10 (approve), 5 (approve with suggestions), 0 (reset), -5 (wait for author), -10 (reject)
+     */
+    async votePullRequest(pullRequestId: number, vote: number): Promise<Reviewer> {
+        try {
+            const gitApi = await this.getGitApi();
+            const currentUser = await this.getCurrentUser();
+
+            const reviewer: IdentityRefWithVote = {
+                vote: vote
+            };
+
+            const result = await gitApi.createPullRequestReviewer(
+                reviewer,
+                this.config.repository,
+                pullRequestId,
+                currentUser.id,
+                this.config.project
+            );
+
+            return this.mapReviewer(result);
+        } catch (error) {
+            throw this.handleError(error, `Failed to vote on pull request ${pullRequestId}`);
         }
     }
 
@@ -689,7 +761,24 @@ export class AzureDevOpsClient {
                 uniqueName: pr.createdBy?.uniqueName || ''
             },
             creationDate: pr.creationDate?.toISOString() || '',
-            url: pr._links?.web?.href || ''
+            url: pr._links?.web?.href || '',
+            reviewers: (pr.reviewers || []).map(r => this.mapReviewer(r))
+        };
+    }
+
+    /**
+     * Map IdentityRefWithVote to our Reviewer interface
+     */
+    private mapReviewer(reviewer: IdentityRefWithVote): Reviewer {
+        return {
+            id: reviewer.id || '',
+            displayName: reviewer.displayName || '',
+            uniqueName: reviewer.uniqueName || '',
+            imageUrl: reviewer.imageUrl || '',
+            vote: reviewer.vote || 0,
+            isRequired: reviewer.isRequired || false,
+            hasDeclined: reviewer.hasDeclined || false,
+            isFlagged: reviewer.isFlagged || false
         };
     }
 

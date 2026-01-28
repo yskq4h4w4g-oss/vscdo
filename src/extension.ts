@@ -152,7 +152,9 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('azureDevOps.createPullRequest', createPullRequest),
         vscode.commands.registerCommand('azureDevOps.viewPullRequest', viewPullRequest),
         vscode.commands.registerCommand('azureDevOps.openPullRequestInBrowser', openPullRequestInBrowser),
-        vscode.commands.registerCommand('azureDevOps.clearCredentials', clearCredentials)
+        vscode.commands.registerCommand('azureDevOps.clearCredentials', clearCredentials),
+        vscode.commands.registerCommand('azureDevOps.approvePullRequest', approvePullRequest),
+        vscode.commands.registerCommand('azureDevOps.rejectPullRequest', rejectPullRequest)
     );
 
     // Listen for workspace folder changes to re-detect repo
@@ -443,6 +445,69 @@ function viewPullRequest(pullRequest: PullRequest) {
 function openPullRequestInBrowser(pullRequest: PullRequest) {
     const webUrl = getPullRequestWebUrl(pullRequest.pullRequestId);
     vscode.env.openExternal(vscode.Uri.parse(webUrl));
+}
+
+async function approvePullRequest(pullRequest: PullRequest) {
+    if (!client) {
+        vscode.window.showWarningMessage('Azure DevOps not configured');
+        return;
+    }
+
+    try {
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: 'Approving pull request...',
+                cancellable: false
+            },
+            async () => {
+                await client!.votePullRequest(pullRequest.pullRequestId, 10);
+            }
+        );
+
+        vscode.window.showInformationMessage(`Pull request #${pullRequest.pullRequestId} approved`);
+        pullRequestProvider.refresh();
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        vscode.window.showErrorMessage(`Failed to approve pull request: ${errorMessage}`);
+    }
+}
+
+async function rejectPullRequest(pullRequest: PullRequest) {
+    if (!client) {
+        vscode.window.showWarningMessage('Azure DevOps not configured');
+        return;
+    }
+
+    // Ask for confirmation before rejecting
+    const confirm = await vscode.window.showWarningMessage(
+        `Are you sure you want to reject PR #${pullRequest.pullRequestId}?`,
+        { modal: true },
+        'Yes, Reject'
+    );
+
+    if (confirm !== 'Yes, Reject') {
+        return;
+    }
+
+    try {
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: 'Rejecting pull request...',
+                cancellable: false
+            },
+            async () => {
+                await client!.votePullRequest(pullRequest.pullRequestId, -10);
+            }
+        );
+
+        vscode.window.showInformationMessage(`Pull request #${pullRequest.pullRequestId} rejected`);
+        pullRequestProvider.refresh();
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        vscode.window.showErrorMessage(`Failed to reject pull request: ${errorMessage}`);
+    }
 }
 
 export function deactivate() {
