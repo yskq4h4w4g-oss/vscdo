@@ -1077,7 +1077,7 @@ export class PullRequestWebviewPanel {
                         html += '<div class="comment-thread' + threadClass + '" data-thread-id="' + thread.id + '">';
                         html += '<div class="comment-thread-header">';
                         html += '<span class="comment-line-info">' + lineInfo + '</span>';
-                        html += '<select class="status-dropdown" data-thread-id="' + thread.id + '" onchange="updateThreadStatus(' + thread.id + ', this.value)">';
+                        html += '<select class="status-dropdown" data-thread-id="' + thread.id + '">';
                         html += '<option value="active"' + (thread.status === 'active' ? ' selected' : '') + '>Active</option>';
                         html += '<option value="fixed"' + (thread.status === 'fixed' ? ' selected' : '') + '>Fixed</option>';
                         html += '<option value="wontFix"' + (thread.status === 'wontFix' ? ' selected' : '') + '>Won\\'t Fix</option>';
@@ -1103,8 +1103,8 @@ export class PullRequestWebviewPanel {
                         html += '<div class="comment-input-container" id="reply-input-' + thread.id + '">';
                         html += '<textarea class="comment-textarea" placeholder="Write a reply..." id="reply-textarea-' + thread.id + '"></textarea>';
                         html += '<div class="comment-actions">';
-                        html += '<button class="comment-btn secondary" onclick="cancelReply(' + thread.id + ')">Cancel</button>';
-                        html += '<button class="comment-btn primary" onclick="submitReply(' + thread.id + ')">Reply</button>';
+                        html += '<button class="comment-btn secondary cancel-reply-btn" data-thread-id="' + thread.id + '">Cancel</button>';
+                        html += '<button class="comment-btn primary submit-reply-btn" data-thread-id="' + thread.id + '">Reply</button>';
                         html += '</div>';
                         html += '</div>';
 
@@ -1112,6 +1112,7 @@ export class PullRequestWebviewPanel {
                     });
 
                     threadsContainer.innerHTML = html;
+                    attachCommentEventListeners(threadsContainer);
                 }
 
                 // Render general PR comment threads (not linked to files)
@@ -1133,7 +1134,7 @@ export class PullRequestWebviewPanel {
                         html += '<div class="general-comment-thread' + threadClass + '" data-thread-id="' + thread.id + '">';
                         html += '<div class="general-comment-header">';
                         html += '<span>General comment</span>';
-                        html += '<select class="status-dropdown" data-thread-id="' + thread.id + '" onchange="updateThreadStatus(' + thread.id + ', this.value)">';
+                        html += '<select class="status-dropdown" data-thread-id="' + thread.id + '">';
                         html += '<option value="active"' + (thread.status === 'active' ? ' selected' : '') + '>Active</option>';
                         html += '<option value="fixed"' + (thread.status === 'fixed' ? ' selected' : '') + '>Fixed</option>';
                         html += '<option value="wontFix"' + (thread.status === 'wontFix' ? ' selected' : '') + '>Won\\'t Fix</option>';
@@ -1159,8 +1160,8 @@ export class PullRequestWebviewPanel {
                         html += '<div class="comment-input-container" id="reply-input-' + thread.id + '">';
                         html += '<textarea class="comment-textarea" placeholder="Write a reply..." id="reply-textarea-' + thread.id + '"></textarea>';
                         html += '<div class="comment-actions">';
-                        html += '<button class="comment-btn secondary" onclick="cancelReply(' + thread.id + ')">Cancel</button>';
-                        html += '<button class="comment-btn primary" onclick="submitReply(' + thread.id + ')">Reply</button>';
+                        html += '<button class="comment-btn secondary cancel-reply-btn" data-thread-id="' + thread.id + '">Cancel</button>';
+                        html += '<button class="comment-btn primary submit-reply-btn" data-thread-id="' + thread.id + '">Reply</button>';
                         html += '</div>';
                         html += '</div>';
 
@@ -1168,6 +1169,7 @@ export class PullRequestWebviewPanel {
                     });
 
                     container.innerHTML = html;
+                    attachCommentEventListeners(container);
                 }
 
                 // Submit a general PR comment (not linked to a file)
@@ -1205,8 +1207,8 @@ export class PullRequestWebviewPanel {
                         '</div>' +
                         '<textarea class="comment-textarea" placeholder="Write your comment..." id="new-comment-textarea"></textarea>' +
                         '<div class="comment-actions">' +
-                        '<button class="comment-btn secondary" onclick="cancelNewComment()">Cancel</button>' +
-                        '<button class="comment-btn primary" onclick="submitNewComment(' + index + ', ' + lineNumber + ', \\'' + side + '\\')">Comment</button>' +
+                        '<button class="comment-btn secondary cancel-new-comment-btn">Cancel</button>' +
+                        '<button class="comment-btn primary submit-new-comment-btn" data-index="' + index + '" data-line="' + lineNumber + '" data-side="' + side + '">Comment</button>' +
                         '</div>' +
                         '</div>';
 
@@ -1214,6 +1216,22 @@ export class PullRequestWebviewPanel {
                     if (threadsContainer) {
                         threadsContainer.insertAdjacentHTML('afterbegin', inputHtml);
                         activeCommentInput = document.getElementById('inline-comment-input');
+
+                        // Attach event listeners
+                        const cancelBtn = activeCommentInput.querySelector('.cancel-new-comment-btn');
+                        if (cancelBtn) {
+                            cancelBtn.addEventListener('click', cancelNewComment);
+                        }
+                        const submitBtn = activeCommentInput.querySelector('.submit-new-comment-btn');
+                        if (submitBtn) {
+                            submitBtn.addEventListener('click', function() {
+                                const idx = parseInt(this.getAttribute('data-index'), 10);
+                                const line = parseInt(this.getAttribute('data-line'), 10);
+                                const s = this.getAttribute('data-side');
+                                submitNewComment(idx, line, s);
+                            });
+                        }
+
                         document.getElementById('new-comment-textarea').focus();
                     }
                 }
@@ -1292,6 +1310,33 @@ export class PullRequestWebviewPanel {
                     if (!dateStr) return '';
                     const date = new Date(dateStr);
                     return date.toLocaleString();
+                }
+
+                // Attach event listeners to dynamically rendered comment elements
+                function attachCommentEventListeners(container) {
+                    // Status dropdowns
+                    container.querySelectorAll('.status-dropdown').forEach(function(dropdown) {
+                        dropdown.addEventListener('change', function() {
+                            const threadId = parseInt(this.getAttribute('data-thread-id'), 10);
+                            updateThreadStatus(threadId, this.value);
+                        });
+                    });
+
+                    // Cancel reply buttons
+                    container.querySelectorAll('.cancel-reply-btn').forEach(function(btn) {
+                        btn.addEventListener('click', function() {
+                            const threadId = parseInt(this.getAttribute('data-thread-id'), 10);
+                            cancelReply(threadId);
+                        });
+                    });
+
+                    // Submit reply buttons
+                    container.querySelectorAll('.submit-reply-btn').forEach(function(btn) {
+                        btn.addEventListener('click', function() {
+                            const threadId = parseInt(this.getAttribute('data-thread-id'), 10);
+                            submitReply(threadId);
+                        });
+                    });
                 }
 
                 // Handle messages from the extension
