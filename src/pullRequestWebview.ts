@@ -51,6 +51,10 @@ export class PullRequestWebviewPanel {
                         await vscode.env.clipboard.writeText(message.url);
                         vscode.window.showInformationMessage('PR link copied to clipboard');
                         return;
+                    case 'openJiraIssue':
+                        // Open the Jira issue using Atlascode extension command
+                        await vscode.commands.executeCommand('atlascode.jira.showIssueForKey', message.issueKey);
+                        return;
                     case 'fetchDiff':
                         try {
                             const diff = await this.client.getFileDiff(
@@ -289,6 +293,13 @@ export class PullRequestWebviewPanel {
     private getHtmlForWebview(webview: vscode.Webview, pr: PullRequest, pipelines: PipelineRun[], files: FileInfo[]): string {
         const sourceBranch = pr.sourceRefName.replace('refs/heads/', '');
         const targetBranch = pr.targetRefName.replace('refs/heads/', '');
+
+        const jiraIssueKeyMatch = sourceBranch.match(/([A-Z][A-Z0-9]*-\d+)/);
+        const jiraIssueKey = jiraIssueKeyMatch ? jiraIssueKeyMatch[1] : null;
+
+        // Check if Atlassian Atlascode extension is installed
+        const atlascodeExtension = vscode.extensions.getExtension('atlassian.atlascode');
+        const isAtlascodeInstalled = !!atlascodeExtension;
 
         // Construct the web URL for the pull request
         const prWebUrl = `${this.organizationUrl}/${this.project}/_git/${this.repository}/pullrequest/${pr.pullRequestId}`;
@@ -945,6 +956,7 @@ export class PullRequestWebviewPanel {
 
             <a href="${prWebUrl}" class="button">Open in Azure DevOps</a>
             <button class="button" id="copy-link-btn">Copy Link</button>
+            ${isAtlascodeInstalled && jiraIssueKey ? `<button class="button" id="open-jira-btn" data-issue-key="${jiraIssueKey}">Open ${jiraIssueKey}</button>` : ''}
 
             ${pr.description ? `
             <h2>Description</h2>
@@ -1637,6 +1649,18 @@ export class PullRequestWebviewPanel {
                     const copyLinkBtn = document.getElementById('copy-link-btn');
                     if (copyLinkBtn) {
                         copyLinkBtn.addEventListener('click', copyLink);
+                    }
+
+                    // Open Jira issue button
+                    const openJiraBtn = document.getElementById('open-jira-btn');
+                    if (openJiraBtn) {
+                        openJiraBtn.addEventListener('click', function() {
+                            const issueKey = openJiraBtn.getAttribute('data-issue-key');
+                            vscode.postMessage({
+                                command: 'openJiraIssue',
+                                issueKey: issueKey
+                            });
+                        });
                     }
 
                     // Voting buttons
