@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff } from './azureDevOpsClient';
+import { PullRequest, PipelineRun, AzureDevOpsClient, PullRequestChange, FileDiff, FileInfo } from './azureDevOpsClient';
 
 export class PullRequestWebviewPanel {
     private static currentPanel: PullRequestWebviewPanel | undefined;
@@ -8,6 +8,8 @@ export class PullRequestWebviewPanel {
     private organizationUrl: string;
     private project: string;
     private repository: string;
+    private sourceRef: string = '';
+    private targetRef: string = '';
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -46,6 +48,31 @@ export class PullRequestWebviewPanel {
                     case 'copyLink':
                         await vscode.env.clipboard.writeText(message.url);
                         vscode.window.showInformationMessage('PR link copied to clipboard');
+                        return;
+                    case 'fetchDiff':
+                        try {
+                            const diff = await this.client.getFileDiff(
+                                message.filePath,
+                                message.changeType,
+                                this.sourceRef,
+                                this.targetRef
+                            );
+                            this.panel.webview.postMessage({
+                                command: 'diffLoaded',
+                                index: message.index,
+                                diff: {
+                                    originalContent: diff.originalContent,
+                                    modifiedContent: diff.modifiedContent
+                                }
+                            });
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            this.panel.webview.postMessage({
+                                command: 'diffError',
+                                index: message.index,
+                                error: errorMessage
+                            });
+                        }
                         return;
                 }
             },
@@ -113,12 +140,17 @@ export class PullRequestWebviewPanel {
         this.panel.title = `PR #${this.pullRequest.pullRequestId}`;
 
         try {
-            // Fetch the latest pipelines and diffs
-            const [pipelines, diffs] = await Promise.all([
+            // Fetch the latest pipelines and file list (not full diffs - those are loaded on demand)
+            const [pipelines, fileListResult] = await Promise.all([
                 this.client.getPullRequestPipelines(this.pullRequest.pullRequestId),
-                this.client.getPullRequestDiffs(this.pullRequest.pullRequestId)
+                this.client.getPullRequestFileList(this.pullRequest.pullRequestId)
             ]);
-            webview.html = this.getHtmlForWebview(webview, this.pullRequest, pipelines, diffs);
+
+            // Store refs for on-demand diff fetching
+            this.sourceRef = fileListResult.sourceRef;
+            this.targetRef = fileListResult.targetRef;
+
+            webview.html = this.getHtmlForWebview(webview, this.pullRequest, pipelines, fileListResult.files);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             webview.html = this.getErrorHtml(errorMessage);
@@ -140,21 +172,22 @@ export class PullRequestWebviewPanel {
         </html>`;
     }
 
-    private getHtmlForWebview(webview: vscode.Webview, pr: PullRequest, pipelines: PipelineRun[], diffs: FileDiff[]): string {
+    private getHtmlForWebview(webview: vscode.Webview, pr: PullRequest, pipelines: PipelineRun[], files: FileInfo[]): string {
         const sourceBranch = pr.sourceRefName.replace('refs/heads/', '');
         const targetBranch = pr.targetRefName.replace('refs/heads/', '');
 
         // Construct the web URL for the pull request
         const prWebUrl = `${this.organizationUrl}/${this.project}/_git/${this.repository}/pullrequest/${pr.pullRequestId}`;
 
-        // Prepare diff data for Monaco editors
-        const diffData = diffs.map((diff, index) => ({
+        // Prepare file data for lazy loading - content will be fetched on demand
+        const fileData = files.map((file, index) => ({
             id: `diff-editor-${index}`,
-            path: diff.path,
-            changeType: diff.changeType,
-            originalContent: diff.originalContent || '',
-            modifiedContent: diff.modifiedContent || '',
-            language: this.getLanguageFromPath(diff.path)
+            path: file.path,
+            changeType: file.changeType,
+            language: this.getLanguageFromPath(file.path),
+            loaded: false,
+            originalContent: '',
+            modifiedContent: ''
         }));
 
         // Generate a nonce for CSP
@@ -165,7 +198,7 @@ export class PullRequestWebviewPanel {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; worker-src blob:; img-src ${webview.cspSource} https: data:;">
+            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; worker-src blob:; img-src ${webview.cspSource} https: data:; connect-src https://cdn.jsdelivr.net;">
             <title>Pull Request #${pr.pullRequestId}</title>
             <style>
                 body {
@@ -433,7 +466,7 @@ export class PullRequestWebviewPanel {
             ` : ''}
 
             <a href="${prWebUrl}" class="button">Open in Azure DevOps</a>
-            <button class="button" onclick="copyLink()">Copy Link</button>
+            <button class="button" id="copy-link-btn">Copy Link</button>
 
             ${pr.description ? `
             <h2>Description</h2>
@@ -441,16 +474,17 @@ export class PullRequestWebviewPanel {
             ` : ''}
 
             <div class="changes">
-                <h2>File Changes (${diffs.length})</h2>
-                ${diffs.length > 0 ? diffs.map((diff, index) => this.getDiffContainerHtml(diff, index)).join('') :
+                <h2>File Changes (${files.length})</h2>
+                ${files.length > 0 ? files.map((file, index) => this.getFileContainerHtml(file, index)).join('') :
                 '<div class="no-changes">No file changes found for this pull request</div>'}
             </div>
 
             <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
             <script nonce="${nonce}">
                 const vscode = acquireVsCodeApi();
-                const diffData = ${JSON.stringify(diffData)};
+                const fileData = ${JSON.stringify(fileData)};
                 const editors = {};
+                const pendingLoads = {};
 
                 function copyLink() {
                     vscode.postMessage({
@@ -465,8 +499,10 @@ export class PullRequestWebviewPanel {
                     if (container.classList.contains('collapsed')) {
                         container.classList.remove('collapsed');
                         icon.classList.remove('collapsed');
-                        // Initialize editor if not already done
-                        if (!editors[index]) {
+                        // Request diff content if not already loaded
+                        if (!fileData[index].loaded && !pendingLoads[index]) {
+                            requestDiff(index);
+                        } else if (fileData[index].loaded && !editors[index]) {
                             initializeEditor(index);
                         }
                     } else {
@@ -475,12 +511,57 @@ export class PullRequestWebviewPanel {
                     }
                 }
 
+                function requestDiff(index) {
+                    const data = fileData[index];
+                    const container = document.getElementById(data.id);
+                    if (container) {
+                        container.innerHTML = '<div class="loading">Loading diff...</div>';
+                    }
+                    pendingLoads[index] = true;
+                    vscode.postMessage({
+                        command: 'fetchDiff',
+                        index: index,
+                        filePath: data.path,
+                        changeType: data.changeType
+                    });
+                }
+
+                // Handle messages from the extension
+                window.addEventListener('message', function(event) {
+                    const message = event.data;
+                    switch (message.command) {
+                        case 'diffLoaded': {
+                            const index = message.index;
+                            fileData[index].originalContent = message.diff.originalContent;
+                            fileData[index].modifiedContent = message.diff.modifiedContent;
+                            fileData[index].loaded = true;
+                            delete pendingLoads[index];
+                            initializeEditor(index);
+                            break;
+                        }
+                        case 'diffError': {
+                            const errorIndex = message.index;
+                            delete pendingLoads[errorIndex];
+                            const errorContainer = document.getElementById(fileData[errorIndex].id);
+                            if (errorContainer) {
+                                errorContainer.innerHTML = '<div class="loading" style="color: var(--vscode-errorForeground);">Error loading diff: ' + message.error + '</div>';
+                            }
+                            break;
+                        }
+                    }
+                });
+
                 function initializeEditor(index) {
-                    const data = diffData[index];
+                    const data = fileData[index];
                     const container = document.getElementById(data.id);
 
                     if (!container) {
                         console.error('Container not found for index', index);
+                        return;
+                    }
+
+                    if (!data.loaded) {
+                        console.error('Data not loaded for index', index);
                         return;
                     }
 
@@ -541,17 +622,31 @@ export class PullRequestWebviewPanel {
                     }
                 }
 
-                // Initialize first visible editors on load
-                window.addEventListener('load', function() {
-                    // Auto-expand and initialize the first 3 diffs
-                    for (let i = 0; i < Math.min(3, diffData.length); i++) {
+                // Set up event listeners when DOM is ready
+                document.addEventListener('DOMContentLoaded', function() {
+                    // Copy link button
+                    const copyLinkBtn = document.getElementById('copy-link-btn');
+                    if (copyLinkBtn) {
+                        copyLinkBtn.addEventListener('click', copyLink);
+                    }
+
+                    // Diff file headers - use event delegation
+                    document.querySelectorAll('.diff-file-header').forEach(function(header) {
+                        header.addEventListener('click', function() {
+                            const index = parseInt(header.getAttribute('data-index'), 10);
+                            toggleDiff(index);
+                        });
+                    });
+
+                    // Auto-expand and request diffs for the first 3 files
+                    for (let i = 0; i < Math.min(3, fileData.length); i++) {
                         const container = document.getElementById('diff-editor-' + i);
                         const icon = document.getElementById('collapse-icon-' + i);
                         if (container && container.classList.contains('collapsed')) {
                             container.classList.remove('collapsed');
                             icon.classList.remove('collapsed');
                         }
-                        initializeEditor(i);
+                        requestDiff(i);
                     }
                 });
             </script>
@@ -602,8 +697,8 @@ export class PullRequestWebviewPanel {
         return languageMap[ext] || 'plaintext';
     }
 
-    private getDiffContainerHtml(diff: FileDiff, index: number): string {
-        const changeType = diff.changeType.toLowerCase();
+    private getFileContainerHtml(file: FileInfo, index: number): string {
+        const changeType = file.changeType.toLowerCase();
         let changeTypeClass = changeType;
         let changeTypeLabel = changeType;
 
@@ -623,13 +718,13 @@ export class PullRequestWebviewPanel {
 
         return `
         <div class="diff-file">
-            <div class="diff-file-header ${changeTypeClass}" onclick="toggleDiff(${index})">
+            <div class="diff-file-header ${changeTypeClass}" data-index="${index}">
                 <span class="collapse-icon collapsed" id="collapse-icon-${index}">▼</span>
                 <span class="change-type ${changeTypeClass}">${changeTypeLabel}</span>
-                <span class="change-path">${this.escapeHtml(diff.path)}</span>
+                <span class="change-path">${this.escapeHtml(file.path)}</span>
             </div>
             <div class="diff-editor-container collapsed" id="diff-editor-${index}">
-                <div class="loading">Loading diff editor...</div>
+                <div class="loading">Click to load diff...</div>
             </div>
         </div>`;
     }

@@ -72,6 +72,11 @@ export interface FileDiff {
     blocks: DiffBlock[];
 }
 
+export interface FileInfo {
+    path: string;
+    changeType: string;
+}
+
 export interface DiffBlock {
     changeType: string;
     mLine: number;
@@ -357,6 +362,157 @@ export class AzureDevOpsClient {
             }));
         } catch (error) {
             throw this.handleError(error, `Failed to fetch changes for PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Get list of changed files for a pull request (fast - no content fetching)
+     */
+    async getPullRequestFileList(pullRequestId: number): Promise<{ files: FileInfo[], sourceRef: string, targetRef: string }> {
+        try {
+            const gitApi = await this.getGitApi();
+
+            // Get the pull request details
+            const pr = await gitApi.getPullRequest(
+                this.config.repository,
+                pullRequestId,
+                this.config.project
+            );
+
+            const sourceRef = pr.sourceRefName;
+            const targetRef = pr.targetRefName;
+
+            if (!sourceRef || !targetRef) {
+                return { files: [], sourceRef: '', targetRef: '' };
+            }
+
+            // Get the diff between target and source branches
+            const baseVersionDescriptor: GitVersionDescriptor = {
+                version: targetRef.replace('refs/heads/', ''),
+                versionType: GitVersionType.Branch
+            };
+            const targetVersionDescriptor: GitVersionDescriptor = {
+                version: sourceRef.replace('refs/heads/', ''),
+                versionType: GitVersionType.Branch
+            };
+
+            const diffResult = await gitApi.getCommitDiffs(
+                this.config.repository,
+                this.config.project,
+                true, // diffCommonCommit
+                undefined, // top
+                undefined, // skip
+                baseVersionDescriptor,
+                targetVersionDescriptor
+            );
+
+            const changes = diffResult?.changes || [];
+            const files: FileInfo[] = [];
+
+            for (const change of changes) {
+                if (!change.item || change.item.isFolder) {
+                    continue;
+                }
+
+                files.push({
+                    path: change.item.path || '',
+                    changeType: this.mapChangeType(change.changeType)
+                });
+            }
+
+            return {
+                files,
+                sourceRef: sourceRef.replace('refs/heads/', ''),
+                targetRef: targetRef.replace('refs/heads/', '')
+            };
+        } catch (error) {
+            throw this.handleError(error, `Failed to fetch file list for PR ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Get diff content for a single file
+     */
+    async getFileDiff(filePath: string, changeType: string, sourceRef: string, targetRef: string): Promise<FileDiff> {
+        try {
+            const gitApi = await this.getGitApi();
+
+            const baseVersionDescriptor: GitVersionDescriptor = {
+                version: targetRef,
+                versionType: GitVersionType.Branch
+            };
+            const targetVersionDescriptor: GitVersionDescriptor = {
+                version: sourceRef,
+                versionType: GitVersionType.Branch
+            };
+
+            let baseContent = '';
+            let targetContent = '';
+
+            // Fetch base version (target branch) - skip for new files
+            if (changeType !== 'add') {
+                try {
+                    const baseItem = await gitApi.getItemContent(
+                        this.config.repository,
+                        filePath,
+                        this.config.project,
+                        undefined, // scopePath
+                        undefined, // recursionLevel
+                        undefined, // includeContentMetadata
+                        undefined, // latestProcessedChange
+                        undefined, // download
+                        baseVersionDescriptor
+                    );
+                    baseContent = await this.streamToString(baseItem);
+                } catch {
+                    baseContent = '';
+                }
+            }
+
+            // Fetch target version (source branch) - skip for deleted files
+            if (changeType !== 'delete') {
+                try {
+                    const targetItem = await gitApi.getItemContent(
+                        this.config.repository,
+                        filePath,
+                        this.config.project,
+                        undefined, // scopePath
+                        undefined, // recursionLevel
+                        undefined, // includeContentMetadata
+                        undefined, // latestProcessedChange
+                        undefined, // download
+                        targetVersionDescriptor
+                    );
+                    targetContent = await this.streamToString(targetItem);
+                } catch {
+                    targetContent = '';
+                }
+            }
+
+            // Generate diff lines
+            const diffLines = this.generateDiff(baseContent, targetContent);
+            const blocks: DiffBlock[] = [];
+
+            if (diffLines.length > 0) {
+                blocks.push({
+                    changeType: changeType,
+                    mLine: 0,
+                    mLinesCount: diffLines.filter(l => l.lineType === 'added').length,
+                    oLine: 0,
+                    oLinesCount: diffLines.filter(l => l.lineType === 'deleted').length,
+                    lines: diffLines
+                });
+            }
+
+            return {
+                path: filePath,
+                changeType: changeType,
+                originalContent: baseContent,
+                modifiedContent: targetContent,
+                blocks
+            };
+        } catch (error) {
+            throw this.handleError(error, `Failed to fetch diff for ${filePath}`);
         }
     }
 
