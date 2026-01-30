@@ -9,6 +9,7 @@ let client: AzureDevOpsClient | undefined;
 let pullRequestProvider: PullRequestProvider;
 let currentConfig: AzureDevOpsConfig | undefined;
 let secretStorage: vscode.SecretStorage;
+let extensionContext: vscode.ExtensionContext;
 
 interface GitRemoteInfo {
     organizationUrl: string;
@@ -56,7 +57,41 @@ function parseAzureDevOpsUrl(remoteUrl: string): GitRemoteInfo | undefined {
     return undefined;
 }
 
-async function detectAzureDevOpsFromWorkspace(): Promise<GitRemoteInfo | undefined> {
+/**
+ * Waits for a repository to have remotes available (with timeout).
+ */
+async function waitForRemotes(repo: Repository, timeoutMs: number = 5000): Promise<Remote[]> {
+    // If remotes are already available, return them
+    if (repo.state.remotes.length > 0) {
+        return repo.state.remotes;
+    }
+
+    console.log('Waiting for repository remotes to be loaded...');
+
+    return new Promise<Remote[]>((resolve) => {
+        const timeout = setTimeout(() => {
+            disposable.dispose();
+            resolve(repo.state.remotes); // Return whatever we have (might be empty)
+        }, timeoutMs);
+
+        const disposable = repo.state.onDidChange(() => {
+            if (repo.state.remotes.length > 0) {
+                clearTimeout(timeout);
+                disposable.dispose();
+                resolve(repo.state.remotes);
+            }
+        });
+
+        // Check again immediately in case state changed between our check and setting up the listener
+        if (repo.state.remotes.length > 0) {
+            clearTimeout(timeout);
+            disposable.dispose();
+            resolve(repo.state.remotes);
+        }
+    });
+}
+
+async function detectAzureDevOpsFromWorkspace(waitForRepo: boolean = false): Promise<GitRemoteInfo | undefined> {
     const gitExtension = vscode.extensions.getExtension<GitExtension>('vscode.git');
     if (!gitExtension) {
         console.log('Git extension not found');
@@ -66,13 +101,72 @@ async function detectAzureDevOpsFromWorkspace(): Promise<GitRemoteInfo | undefin
     const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
     const api = git.getAPI(1);
 
+    // If no repositories found and we should wait, wait for the Git extension to discover them
+    if (api.repositories.length === 0 && waitForRepo) {
+        console.log('No git repositories found yet, waiting for Git extension to discover repositories...');
+
+        // Wait for a repository to be opened (with a timeout)
+        const repo = await new Promise<Repository | undefined>((resolve) => {
+            // Check if a repo appears within 10 seconds
+            const timeout = setTimeout(() => {
+                disposable.dispose();
+                resolve(undefined);
+            }, 10000);
+
+            const disposable = api.onDidOpenRepository((repository: Repository) => {
+                clearTimeout(timeout);
+                disposable.dispose();
+                resolve(repository);
+            });
+
+            // Also check again immediately in case one was added between our check and setting up the listener
+            if (api.repositories.length > 0) {
+                clearTimeout(timeout);
+                disposable.dispose();
+                resolve(api.repositories[0]);
+            }
+        });
+
+        if (!repo) {
+            console.log('No git repositories found in workspace after waiting');
+            return undefined;
+        }
+
+        // Wait for remotes to be loaded
+        const remotes = await waitForRemotes(repo);
+        const originRemote = remotes.find(r => r.name === 'origin');
+        const remote = originRemote || remotes[0];
+
+        if (!remote) {
+            console.log('No git remotes found');
+            return undefined;
+        }
+
+        const remoteUrl = remote.fetchUrl || remote.pushUrl;
+        if (!remoteUrl) {
+            console.log('No remote URL found');
+            return undefined;
+        }
+
+        console.log(`Detected git remote URL: ${remoteUrl}`);
+        const info = parseAzureDevOpsUrl(remoteUrl);
+
+        if (info) {
+            console.log(`Detected Azure DevOps repo: ${info.organizationUrl}/${info.project}/${info.repository}`);
+        }
+
+        return info;
+    }
+
     if (api.repositories.length === 0) {
         console.log('No git repositories found in workspace');
         return undefined;
     }
 
     const repo = api.repositories[0];
-    const remotes = repo.state.remotes;
+
+    // Wait for remotes to be loaded if we should wait
+    const remotes = waitForRepo ? await waitForRemotes(repo) : repo.state.remotes;
 
     // Try 'origin' first, then any other remote
     const originRemote = remotes.find(r => r.name === 'origin');
@@ -106,6 +200,7 @@ interface GitExtension {
 
 interface GitAPI {
     repositories: Repository[];
+    onDidOpenRepository: vscode.Event<Repository>;
 }
 
 interface Repository {
@@ -114,6 +209,7 @@ interface Repository {
 
 interface RepositoryState {
     remotes: Remote[];
+    onDidChange: vscode.Event<void>;
 }
 
 interface Remote {
@@ -132,8 +228,14 @@ function getPullRequestWebUrl(pullRequestId: number): string {
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Azure DevOps extension is now active');
 
+    // Store extension context for global access
+    extensionContext = context;
+
     // Initialize secret storage
     secretStorage = context.secrets;
+
+    // Ensure we have the PAT from global state if available (fallback for edge cases)
+    await ensurePATAvailable();
 
     // Migrate PAT from old config-based storage to SecretStorage
     await migratePATToSecretStorage();
@@ -142,8 +244,8 @@ export async function activate(context: vscode.ExtensionContext) {
     pullRequestProvider = new PullRequestProvider();
     vscode.window.registerTreeDataProvider('azureDevOpsPullRequests', pullRequestProvider);
 
-    // Initialize client with current configuration
-    await initializeClient();
+    // Initialize client with current configuration (wait for Git extension to discover repos on startup)
+    await initializeClient(true);
 
     // Register commands
     context.subscriptions.push(
@@ -218,7 +320,33 @@ async function migratePATToSecretStorage(): Promise<void> {
     }
 }
 
-async function initializeClient() {
+/**
+ * Ensures the PAT is available by checking both SecretStorage and globalState.
+ * Uses globalState as a backup mechanism for cross-window persistence.
+ */
+async function ensurePATAvailable(): Promise<void> {
+    const GLOBAL_PAT_KEY = 'azureDevOps.pat.backup';
+
+    // Try to get PAT from SecretStorage
+    let pat = await secretStorage.get(PAT_SECRET_KEY);
+
+    if (pat) {
+        // PAT exists in SecretStorage, also save to globalState as backup
+        await extensionContext.globalState.update(GLOBAL_PAT_KEY, pat);
+        console.log('PAT found in SecretStorage, synced to globalState backup');
+    } else {
+        // No PAT in SecretStorage, try to restore from globalState backup
+        const backupPat = extensionContext.globalState.get<string>(GLOBAL_PAT_KEY);
+
+        if (backupPat) {
+            // Restore PAT from globalState backup to SecretStorage
+            await secretStorage.store(PAT_SECRET_KEY, backupPat);
+            console.log('PAT restored from globalState backup to SecretStorage');
+        }
+    }
+}
+
+async function initializeClient(waitForRepo: boolean = false) {
     const pat = await secretStorage.get(PAT_SECRET_KEY);
 
     if (!pat) {
@@ -230,7 +358,7 @@ async function initializeClient() {
     }
 
     // Try to detect repo info from workspace git remote
-    const detectedInfo = await detectAzureDevOpsFromWorkspace();
+    const detectedInfo = await detectAzureDevOpsFromWorkspace(waitForRepo);
 
     if (!detectedInfo) {
         client = undefined;
@@ -289,6 +417,9 @@ async function configureConnection() {
     // Save PAT to secure storage
     await secretStorage.store(PAT_SECRET_KEY, pat);
 
+    // Also save to globalState as a backup for cross-window persistence
+    await extensionContext.globalState.update('azureDevOps.pat.backup', pat);
+
     vscode.window.showInformationMessage('Azure DevOps PAT saved securely');
 
     // Reinitialize client
@@ -307,6 +438,8 @@ async function clearCredentials() {
 
     if (confirm === 'Yes, Clear') {
         await secretStorage.delete(PAT_SECRET_KEY);
+        // Also clear the globalState backup
+        await extensionContext.globalState.update('azureDevOps.pat.backup', undefined);
         client = undefined;
         currentConfig = undefined;
         pullRequestProvider.setClient(undefined);

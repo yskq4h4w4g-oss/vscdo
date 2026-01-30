@@ -2,7 +2,7 @@
   "name": "azure-devops-pr-manager",
   "displayName": "Azure DevOps PR Manager",
   "description": "Manage Azure DevOps pull requests and monitor pipeline status",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "engines": {
     "vscode": "^1.85.0"
   },
