@@ -189,6 +189,55 @@ export class PullRequestWebviewPanel {
                             vscode.window.showErrorMessage(`Failed to update status: ${errorMessage}`);
                         }
                         return;
+                    case 'completePullRequest':
+                        try {
+                            // Ask for confirmation
+                            const sourceBranch = this.pullRequest.sourceRefName.replace('refs/heads/', '');
+                            const targetBranch = this.pullRequest.targetRefName.replace('refs/heads/', '');
+                            const confirmMessage = `Complete PR #${this.pullRequest.pullRequestId}?\n\nMerge "${sourceBranch}" into "${targetBranch}" using ${message.mergeStrategy}${message.deleteSourceBranch ? ' and delete source branch' : ''}`;
+
+                            const confirm = await vscode.window.showWarningMessage(
+                                confirmMessage,
+                                { modal: true },
+                                'Yes, Complete'
+                            );
+
+                            if (confirm !== 'Yes, Complete') {
+                                this.panel.webview.postMessage({
+                                    command: 'completeCancelled'
+                                });
+                                return;
+                            }
+
+                            await this.client.completePullRequest(this.pullRequest.pullRequestId, {
+                                mergeStrategy: message.mergeStrategy,
+                                deleteSourceBranch: message.deleteSourceBranch,
+                                transitionWorkItems: true
+                            });
+
+                            // Save the selected options as new defaults
+                            const config = vscode.workspace.getConfiguration('azureDevOps');
+                            await config.update('defaultMergeStrategy', message.mergeStrategy, vscode.ConfigurationTarget.Global);
+                            await config.update('defaultDeleteSourceBranch', message.deleteSourceBranch, vscode.ConfigurationTarget.Global);
+
+                            vscode.window.showInformationMessage(`Pull request #${this.pullRequest.pullRequestId} completed successfully`);
+
+                            // Refresh the PR data
+                            this.pullRequest = await this.client.getPullRequest(this.pullRequest.pullRequestId);
+                            this.panel.webview.postMessage({
+                                command: 'prCompleted',
+                                status: this.pullRequest.status
+                            });
+                            this.update();
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                            this.panel.webview.postMessage({
+                                command: 'completeError',
+                                error: errorMessage
+                            });
+                            vscode.window.showErrorMessage(`Failed to complete pull request: ${errorMessage}`);
+                        }
+                        return;
                 }
             },
             null,
@@ -697,6 +746,64 @@ export class PullRequestWebviewPanel {
                     background-color: var(--vscode-button-secondaryBackground);
                     color: var(--vscode-button-secondaryForeground);
                 }
+                /* Complete PR section */
+                .complete-section {
+                    margin-top: 15px;
+                    padding-top: 15px;
+                    border-top: 1px solid var(--vscode-panel-border);
+                }
+                .complete-section h3 {
+                    margin: 0 0 10px 0;
+                    font-size: 14px;
+                    color: var(--vscode-descriptionForeground);
+                }
+                .complete-options {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                    margin-bottom: 10px;
+                }
+                .complete-option {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                .complete-option label {
+                    font-size: 13px;
+                }
+                .complete-option select {
+                    padding: 6px 10px;
+                    border-radius: 4px;
+                    border: 1px solid var(--vscode-dropdown-border);
+                    background-color: var(--vscode-dropdown-background);
+                    color: var(--vscode-dropdown-foreground);
+                    font-size: 13px;
+                    cursor: pointer;
+                }
+                .complete-option input[type="checkbox"] {
+                    width: 16px;
+                    height: 16px;
+                    cursor: pointer;
+                }
+                .complete-btn {
+                    padding: 10px 20px;
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    cursor: pointer;
+                    font-family: var(--vscode-font-family);
+                    background-color: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    transition: opacity 0.2s;
+                    font-weight: 500;
+                }
+                .complete-btn:hover {
+                    background-color: var(--vscode-button-hoverBackground);
+                }
+                .complete-btn:disabled {
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
                 /* Comment styles */
                 .comment-threads-container {
                     padding: 10px 15px;
@@ -970,6 +1077,7 @@ export class PullRequestWebviewPanel {
                     <h3>Cast Your Vote</h3>
                     ${this.getVotingButtonsHtml()}
                 </div>
+                ${this.getCompleteSectionHtml(pr)}
             </div>
 
             <div class="general-comments-section">
@@ -1468,6 +1576,26 @@ export class PullRequestWebviewPanel {
                             }
                             break;
                         }
+                        case 'completeCancelled':
+                        case 'completeError': {
+                            // Re-enable the complete button
+                            const completeBtn = document.getElementById('complete-pr-btn');
+                            if (completeBtn) {
+                                const sourceBranch = completeBtn.getAttribute('data-source-branch') || '';
+                                const targetBranch = completeBtn.getAttribute('data-target-branch') || '';
+                                completeBtn.disabled = false;
+                                completeBtn.textContent = 'Complete PR: Merge into target';
+                            }
+                            break;
+                        }
+                        case 'prCompleted': {
+                            // Hide the complete section since PR is no longer active
+                            const completeSection = document.querySelector('.complete-section');
+                            if (completeSection) {
+                                completeSection.innerHTML = '<div style="padding: 10px; background: var(--vscode-charts-green); color: white; border-radius: 4px; text-align: center;">Pull request completed successfully!</div>';
+                            }
+                            break;
+                        }
                     }
                 });
 
@@ -1643,6 +1771,28 @@ export class PullRequestWebviewPanel {
                     });
                 }
 
+                // Handle complete PR
+                function completePullRequest() {
+                    const mergeStrategySelect = document.getElementById('merge-strategy');
+                    const deleteSourceBranchCheckbox = document.getElementById('delete-source-branch');
+                    const completeBtn = document.getElementById('complete-pr-btn');
+
+                    if (!mergeStrategySelect || !completeBtn) return;
+
+                    const mergeStrategy = mergeStrategySelect.value;
+                    const deleteSourceBranch = deleteSourceBranchCheckbox ? deleteSourceBranchCheckbox.checked : false;
+
+                    // Disable button while processing
+                    completeBtn.disabled = true;
+                    completeBtn.textContent = 'Completing...';
+
+                    vscode.postMessage({
+                        command: 'completePullRequest',
+                        mergeStrategy: mergeStrategy,
+                        deleteSourceBranch: deleteSourceBranch
+                    });
+                }
+
                 // Set up event listeners when DOM is ready
                 document.addEventListener('DOMContentLoaded', function() {
                     // Copy link button
@@ -1670,6 +1820,12 @@ export class PullRequestWebviewPanel {
                             vote(voteValue);
                         });
                     });
+
+                    // Complete PR button
+                    const completePrBtn = document.getElementById('complete-pr-btn');
+                    if (completePrBtn) {
+                        completePrBtn.addEventListener('click', completePullRequest);
+                    }
 
                     // General comment submit button
                     const generalCommentBtn = document.getElementById('submit-general-comment-btn');
@@ -1941,6 +2097,44 @@ export class PullRequestWebviewPanel {
             <button class="vote-btn waiting" data-vote="-5" title="Wait for author">Wait for author</button>
             <button class="vote-btn reject" data-vote="-10" title="Reject">Reject</button>
             <button class="vote-btn reset" data-vote="0" title="Reset vote">Reset vote</button>
+        </div>`;
+    }
+
+    private getCompleteSectionHtml(pr: PullRequest): string {
+        // Only show complete section for active PRs
+        if (pr.status !== 'active') {
+            return '';
+        }
+
+        const sourceBranch = pr.sourceRefName.replace('refs/heads/', '');
+        const targetBranch = pr.targetRefName.replace('refs/heads/', '');
+
+        // Get saved preferences
+        const config = vscode.workspace.getConfiguration('azureDevOps');
+        const savedMergeStrategy = config.get<string>('defaultMergeStrategy', 'noFastForward');
+        const savedDeleteSourceBranch = config.get<boolean>('defaultDeleteSourceBranch', false);
+
+        return `
+        <div class="complete-section">
+            <h3>Complete Pull Request</h3>
+            <div class="complete-options">
+                <div class="complete-option">
+                    <label for="merge-strategy">Merge Strategy:</label>
+                    <select id="merge-strategy">
+                        <option value="noFastForward"${savedMergeStrategy === 'noFastForward' ? ' selected' : ''}>Merge (no fast-forward)</option>
+                        <option value="squash"${savedMergeStrategy === 'squash' ? ' selected' : ''}>Squash commit</option>
+                        <option value="rebase"${savedMergeStrategy === 'rebase' ? ' selected' : ''}>Rebase and fast-forward</option>
+                        <option value="rebaseMerge"${savedMergeStrategy === 'rebaseMerge' ? ' selected' : ''}>Rebase and merge</option>
+                    </select>
+                </div>
+                <div class="complete-option">
+                    <input type="checkbox" id="delete-source-branch"${savedDeleteSourceBranch ? ' checked' : ''} />
+                    <label for="delete-source-branch">Delete source branch "${this.escapeHtml(sourceBranch)}" after merging</label>
+                </div>
+            </div>
+            <button class="complete-btn" id="complete-pr-btn" title="Complete this pull request">
+                Complete PR: Merge "${this.escapeHtml(sourceBranch)}" into "${this.escapeHtml(targetBranch)}"
+            </button>
         </div>`;
     }
 }

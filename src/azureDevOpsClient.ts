@@ -1,7 +1,7 @@
 import * as azdev from 'azure-devops-node-api';
 import * as GitApi from 'azure-devops-node-api/GitApi';
 import * as BuildApi from 'azure-devops-node-api/BuildApi';
-import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType, IdentityRefWithVote, GitPullRequestCommentThread, Comment as GitComment, CommentThreadStatus, CommentType } from 'azure-devops-node-api/interfaces/GitInterfaces';
+import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, GitRef, VersionControlChangeType, GitVersionDescriptor, GitVersionType, IdentityRefWithVote, GitPullRequestCommentThread, Comment as GitComment, CommentThreadStatus, CommentType, GitPullRequestCompletionOptions, GitPullRequestMergeStrategy } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { Build, BuildDefinitionReference, BuildStatus, BuildResult } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 
 export interface AzureDevOpsConfig {
@@ -59,6 +59,13 @@ export interface CreatePullRequestParams {
     targetRefName: string;
     title: string;
     description: string;
+}
+
+export interface CompletePullRequestOptions {
+    deleteSourceBranch?: boolean;
+    mergeCommitMessage?: string;
+    mergeStrategy?: 'noFastForward' | 'squash' | 'rebase' | 'rebaseMerge';
+    transitionWorkItems?: boolean;
 }
 
 export interface FileChange {
@@ -244,6 +251,71 @@ export class AzureDevOpsClient {
             return this.mapReviewer(result);
         } catch (error) {
             throw this.handleError(error, `Failed to vote on pull request ${pullRequestId}`);
+        }
+    }
+
+    /**
+     * Complete (merge) a pull request
+     * @param pullRequestId The ID of the pull request
+     * @param options Options for completing the PR (merge strategy, delete source branch, etc.)
+     */
+    async completePullRequest(pullRequestId: number, options: CompletePullRequestOptions = {}): Promise<PullRequest> {
+        try {
+            const gitApi = await this.getGitApi();
+            const currentUser = await this.getCurrentUser();
+
+            // First get the current PR to get the last merge source commit
+            const currentPr = await gitApi.getPullRequest(
+                this.config.repository,
+                pullRequestId,
+                this.config.project
+            );
+
+            if (!currentPr.lastMergeSourceCommit?.commitId) {
+                throw new Error('Unable to get last merge source commit');
+            }
+
+            // Map merge strategy string to enum
+            let mergeStrategy: GitPullRequestMergeStrategy | undefined;
+            switch (options.mergeStrategy) {
+                case 'squash':
+                    mergeStrategy = GitPullRequestMergeStrategy.Squash;
+                    break;
+                case 'rebase':
+                    mergeStrategy = GitPullRequestMergeStrategy.Rebase;
+                    break;
+                case 'rebaseMerge':
+                    mergeStrategy = GitPullRequestMergeStrategy.RebaseMerge;
+                    break;
+                case 'noFastForward':
+                default:
+                    mergeStrategy = GitPullRequestMergeStrategy.NoFastForward;
+                    break;
+            }
+
+            const completionOptions: GitPullRequestCompletionOptions = {
+                deleteSourceBranch: options.deleteSourceBranch ?? false,
+                mergeCommitMessage: options.mergeCommitMessage,
+                mergeStrategy: mergeStrategy,
+                transitionWorkItems: options.transitionWorkItems ?? true
+            };
+
+            const prUpdate: GitPullRequest = {
+                status: PullRequestStatus.Completed,
+                lastMergeSourceCommit: currentPr.lastMergeSourceCommit,
+                completionOptions: completionOptions
+            };
+
+            const result = await gitApi.updatePullRequest(
+                prUpdate,
+                this.config.repository,
+                pullRequestId,
+                this.config.project
+            );
+
+            return this.mapPullRequest(result);
+        } catch (error) {
+            throw this.handleError(error, `Failed to complete pull request ${pullRequestId}`);
         }
     }
 

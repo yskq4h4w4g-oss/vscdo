@@ -2,7 +2,7 @@
   "name": "azure-devops-pr-manager",
   "displayName": "Azure DevOps PR Manager",
   "description": "Manage Azure DevOps pull requests and monitor pipeline status",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -51,6 +51,11 @@
         "command": "azureDevOps.rejectPullRequest",
         "title": "Reject Pull Request",
         "icon": "$(x)"
+      },
+      {
+        "command": "azureDevOps.completePullRequest",
+        "title": "Complete Pull Request",
+        "icon": "$(check-all)"
       }
     ],
     "viewsContainers": {
@@ -101,12 +106,34 @@
           "command": "azureDevOps.rejectPullRequest",
           "when": "view == azureDevOpsPullRequests && viewItem == pullRequest",
           "group": "inline"
+        },
+        {
+          "command": "azureDevOps.completePullRequest",
+          "when": "view == azureDevOpsPullRequests && viewItem == pullRequest"
         }
       ]
     },
     "configuration": {
       "title": "Azure DevOps",
-      "properties": {}
+      "properties": {
+        "azureDevOps.defaultMergeStrategy": {
+          "type": "string",
+          "default": "noFastForward",
+          "enum": ["noFastForward", "squash", "rebase", "rebaseMerge"],
+          "enumDescriptions": [
+            "Merge (no fast-forward) - Create a merge commit",
+            "Squash - Squash all commits into a single commit",
+            "Rebase - Rebase and fast-forward",
+            "Rebase and merge - Rebase and create a merge commit"
+          ],
+          "description": "Default merge strategy when completing pull requests"
+        },
+        "azureDevOps.defaultDeleteSourceBranch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Default setting for deleting source branch after merging"
+        }
+      }
     }
   },
   "repository": {

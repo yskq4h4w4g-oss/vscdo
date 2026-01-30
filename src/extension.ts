@@ -256,7 +256,8 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('azureDevOps.openPullRequestInBrowser', openPullRequestInBrowser),
         vscode.commands.registerCommand('azureDevOps.clearCredentials', clearCredentials),
         vscode.commands.registerCommand('azureDevOps.approvePullRequest', approvePullRequest),
-        vscode.commands.registerCommand('azureDevOps.rejectPullRequest', rejectPullRequest)
+        vscode.commands.registerCommand('azureDevOps.rejectPullRequest', rejectPullRequest),
+        vscode.commands.registerCommand('azureDevOps.completePullRequest', completePullRequest)
     );
 
     // Listen for workspace folder changes to re-detect repo
@@ -640,6 +641,115 @@ async function rejectPullRequest(pullRequest: PullRequest) {
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         vscode.window.showErrorMessage(`Failed to reject pull request: ${errorMessage}`);
+    }
+}
+
+async function completePullRequest(pullRequest: PullRequest) {
+    if (!client) {
+        vscode.window.showWarningMessage('Azure DevOps not configured');
+        return;
+    }
+
+    // Get saved preferences
+    const config = vscode.workspace.getConfiguration('azureDevOps');
+    const savedMergeStrategy = config.get<string>('defaultMergeStrategy', 'noFastForward');
+    const savedDeleteSourceBranch = config.get<boolean>('defaultDeleteSourceBranch', false);
+
+    // Build merge strategy options with saved preference first
+    const mergeStrategyOptions = [
+        { label: 'Merge (no fast-forward)', value: 'noFastForward', description: 'Create a merge commit' },
+        { label: 'Squash', value: 'squash', description: 'Squash all commits into a single commit' },
+        { label: 'Rebase', value: 'rebase', description: 'Rebase and fast-forward' },
+        { label: 'Rebase and merge', value: 'rebaseMerge', description: 'Rebase and create a merge commit' }
+    ];
+
+    // Find and mark the saved option as default
+    const savedIndex = mergeStrategyOptions.findIndex(opt => opt.value === savedMergeStrategy);
+    if (savedIndex > 0) {
+        // Move saved option to the top
+        const [savedOption] = mergeStrategyOptions.splice(savedIndex, 1);
+        savedOption.description += ' (saved default)';
+        mergeStrategyOptions.unshift(savedOption);
+    } else if (savedIndex === 0) {
+        mergeStrategyOptions[0].description += ' (saved default)';
+    }
+
+    // Ask for merge strategy
+    const mergeStrategy = await vscode.window.showQuickPick(
+        mergeStrategyOptions,
+        {
+            placeHolder: 'Select merge strategy',
+            title: `Complete PR #${pullRequest.pullRequestId}`
+        }
+    );
+
+    if (!mergeStrategy) {
+        return;
+    }
+
+    // Build delete source branch options with saved preference first
+    const deleteOptions = savedDeleteSourceBranch
+        ? [
+            { label: 'Yes', value: true, description: 'Delete the source branch after merging (saved default)' },
+            { label: 'No', value: false, description: 'Keep the source branch' }
+        ]
+        : [
+            { label: 'No', value: false, description: 'Keep the source branch (saved default)' },
+            { label: 'Yes', value: true, description: 'Delete the source branch after merging' }
+        ];
+
+    // Ask about deleting source branch
+    const deleteSourceBranch = await vscode.window.showQuickPick(
+        deleteOptions,
+        {
+            placeHolder: 'Delete source branch after merging?'
+        }
+    );
+
+    if (deleteSourceBranch === undefined) {
+        return;
+    }
+
+    // Final confirmation
+    const sourceBranch = pullRequest.sourceRefName.replace('refs/heads/', '');
+    const targetBranch = pullRequest.targetRefName.replace('refs/heads/', '');
+    const confirmMessage = `Complete PR #${pullRequest.pullRequestId}?\n\nMerge "${sourceBranch}" into "${targetBranch}" using ${mergeStrategy.label.toLowerCase()}${deleteSourceBranch.value ? ' and delete source branch' : ''}`;
+
+    const confirm = await vscode.window.showWarningMessage(
+        confirmMessage,
+        { modal: true },
+        'Yes, Complete'
+    );
+
+    if (confirm !== 'Yes, Complete') {
+        return;
+    }
+
+    try {
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: 'Completing pull request...',
+                cancellable: false
+            },
+            async () => {
+                await client!.completePullRequest(pullRequest.pullRequestId, {
+                    mergeStrategy: mergeStrategy.value as 'noFastForward' | 'squash' | 'rebase' | 'rebaseMerge',
+                    deleteSourceBranch: deleteSourceBranch.value,
+                    transitionWorkItems: true
+                });
+            }
+        );
+
+        // Save the selected options as new defaults
+        await config.update('defaultMergeStrategy', mergeStrategy.value, vscode.ConfigurationTarget.Global);
+        await config.update('defaultDeleteSourceBranch', deleteSourceBranch.value, vscode.ConfigurationTarget.Global);
+
+        vscode.window.showInformationMessage(`Pull request #${pullRequest.pullRequestId} completed successfully`);
+        pullRequestProvider.refresh();
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        vscode.window.showErrorMessage(`Failed to complete pull request: ${errorMessage}`);
     }
 }
 
