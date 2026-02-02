@@ -212,7 +212,7 @@ export class PullRequestWebviewPanel {
                             await this.client.completePullRequest(this.pullRequest.pullRequestId, {
                                 mergeStrategy: message.mergeStrategy,
                                 deleteSourceBranch: message.deleteSourceBranch,
-                                transitionWorkItems: true
+                                mergeCommitMessage: `Merged PR ${pullRequest.pullRequestId}: ${pullRequest.title}`
                             });
 
                             // Save the selected options as new defaults

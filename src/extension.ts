@@ -736,7 +736,7 @@ async function completePullRequest(pullRequest: PullRequest) {
                 await client!.completePullRequest(pullRequest.pullRequestId, {
                     mergeStrategy: mergeStrategy.value as 'noFastForward' | 'squash' | 'rebase' | 'rebaseMerge',
                     deleteSourceBranch: deleteSourceBranch.value,
-                    transitionWorkItems: true
+                    mergeCommitMessage: `Merged PR ${pullRequest.pullRequestId}: ${pullRequest.title}`
                 });
             }
         );

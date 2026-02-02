@@ -65,7 +65,6 @@ export interface CompletePullRequestOptions {
     deleteSourceBranch?: boolean;
     mergeCommitMessage?: string;
     mergeStrategy?: 'noFastForward' | 'squash' | 'rebase' | 'rebaseMerge';
-    transitionWorkItems?: boolean;
 }
 
 export interface FileChange {
@@ -297,7 +296,6 @@ export class AzureDevOpsClient {
                 deleteSourceBranch: options.deleteSourceBranch ?? false,
                 mergeCommitMessage: options.mergeCommitMessage,
                 mergeStrategy: mergeStrategy,
-                transitionWorkItems: options.transitionWorkItems ?? true
             };
 
             const prUpdate: GitPullRequest = {
