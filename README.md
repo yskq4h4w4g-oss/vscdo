@@ -73,6 +73,13 @@ Then install the `.vsix` file in VS Code.
 4. Enter a title and optional description
 5. The PR will be created and appear in the list
 
+### PR Branch Prefill Settings
+
+Two settings are available to speed up PR creation (VS Code Settings → Azure DevOps):
+
+- **Prefill Source Branch** (`azureDevOps.prefillSourceBranch`): When enabled, the current active git branch is automatically moved to the top of the source branch picker.
+- **Default Target Branch** (`azureDevOps.defaultTargetBranch`): Set a branch name (e.g. `main`, `develop`) to have it moved to the top of the target branch picker by default.
+
 ### Pipeline Status
 
 - Pipeline runs are shown under each PR in the tree view
