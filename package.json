@@ -132,6 +132,16 @@
           "type": "boolean",
           "default": false,
           "description": "Default setting for deleting source branch after merging"
+        },
+        "azureDevOps.prefillSourceBranch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically prefill the current active git branch as the source branch when creating a pull request"
+        },
+        "azureDevOps.defaultTargetBranch": {
+          "type": "string",
+          "default": "",
+          "description": "Default target branch to prefill when creating a pull request (e.g. 'main', 'develop')"
         }
       }
     }

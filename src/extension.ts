@@ -209,6 +209,7 @@ interface Repository {
 
 interface RepositoryState {
     remotes: Remote[];
+    HEAD?: { name?: string };
     onDidChange: vscode.Event<void>;
 }
 
@@ -477,11 +478,35 @@ async function createPullRequest() {
             }
         );
 
-        // Select source branch
+        const config = vscode.workspace.getConfiguration('azureDevOps');
+        const prefillSource = config.get<boolean>('prefillSourceBranch', false);
+        const defaultTarget = config.get<string>('defaultTargetBranch', '');
+
+        // Determine current active branch for prefill
+        let currentBranch: string | undefined;
+        if (prefillSource) {
+            const gitExtension = vscode.extensions.getExtension<GitExtension>('vscode.git');
+            if (gitExtension) {
+                const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
+                const api = git.getAPI(1);
+                if (api.repositories.length > 0) {
+                    currentBranch = api.repositories[0].state.HEAD?.name;
+                }
+            }
+        }
+
+        // Select source branch — put current branch first if prefill is enabled
+        const branchNames = branches.map(b => b.replace('refs/heads/', ''));
+        const sourceBranchItems = currentBranch
+            ? [currentBranch, ...branchNames.filter(b => b !== currentBranch)]
+            : branchNames;
+
         const sourceBranch = await vscode.window.showQuickPick(
-            branches.map(b => b.replace('refs/heads/', '')),
+            sourceBranchItems,
             {
-                placeHolder: 'Select source branch'
+                placeHolder: currentBranch
+                    ? `Select source branch (current: ${currentBranch})`
+                    : 'Select source branch'
             }
         );
 
@@ -489,11 +514,20 @@ async function createPullRequest() {
             return;
         }
 
-        // Select target branch
+        // Select target branch — put default target branch first if configured
+        const targetBranchNames = branches
+            .filter(b => b !== `refs/heads/${sourceBranch}`)
+            .map(b => b.replace('refs/heads/', ''));
+        const targetBranchItems = defaultTarget && targetBranchNames.includes(defaultTarget)
+            ? [defaultTarget, ...targetBranchNames.filter(b => b !== defaultTarget)]
+            : targetBranchNames;
+
         const targetBranch = await vscode.window.showQuickPick(
-            branches.filter(b => b !== `refs/heads/${sourceBranch}`).map(b => b.replace('refs/heads/', '')),
+            targetBranchItems,
             {
-                placeHolder: 'Select target branch'
+                placeHolder: defaultTarget
+                    ? `Select target branch (default: ${defaultTarget})`
+                    : 'Select target branch'
             }
         );
 
