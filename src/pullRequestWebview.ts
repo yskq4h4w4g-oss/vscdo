@@ -238,6 +238,21 @@ export class PullRequestWebviewPanel {
                             vscode.window.showErrorMessage(`Failed to complete pull request: ${errorMessage}`);
                         }
                         return;
+                    case 'openPullRequest':
+                        try {
+                            const pr = await this.client.getPullRequest(message.pullRequestId);
+                            PullRequestWebviewPanel.createOrShow(
+                                vscode.Uri.file(__dirname),
+                                this.client,
+                                pr,
+                                this.organizationUrl,
+                                this.project,
+                                this.repository
+                            );
+                        } catch (error) {
+                            vscode.window.showErrorMessage(`Failed to open pull request #${message.pullRequestId}`);
+                        }
+                        return;
                 }
             },
             null,
@@ -352,6 +367,9 @@ export class PullRequestWebviewPanel {
 
         // Construct the web URL for the pull request
         const prWebUrl = `${this.organizationUrl}/${this.project}/_git/${this.repository}/pullrequest/${pr.pullRequestId}`;
+
+        const redirectPrLinks = vscode.workspace.getConfiguration('azureDevOps')
+            .get<boolean>('redirectPrLinksToExtension', true);
 
         // Prepare file data for lazy loading - content will be fetched on demand
         const fileData = files.map((file, index) => ({
@@ -1061,13 +1079,13 @@ export class PullRequestWebviewPanel {
             </div>
             ` : ''}
 
-            <a href="${prWebUrl}" class="button">Open in Azure DevOps</a>
+            <a href="${prWebUrl}" class="button" data-external="true">Open in Azure DevOps</a>
             <button class="button" id="copy-link-btn">Copy Link</button>
             ${isAtlascodeInstalled && jiraIssueKey ? `<button class="button" id="open-jira-btn" data-issue-key="${jiraIssueKey}">Open ${jiraIssueKey}</button>` : ''}
 
             ${pr.description ? `
             <h2>Description</h2>
-            <div class="description">${this.escapeHtml(pr.description)}</div>
+            <div class="description">${this.escapeHtmlAndLinkifyPrUrls(pr.description)}</div>
             ` : ''}
 
             <div class="reviewers-section">
@@ -1105,6 +1123,7 @@ export class PullRequestWebviewPanel {
             <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
             <script nonce="${nonce}">
                 const vscode = acquireVsCodeApi();
+                const redirectPrLinksToExtension = ${redirectPrLinks};
                 const fileData = ${JSON.stringify(fileData)};
                 const editors = {};
                 const pendingLoads = {};
@@ -1215,7 +1234,7 @@ export class PullRequestWebviewPanel {
                             html += '<span class="comment-author-name">' + escapeHtml(comment.author.displayName) + '</span>';
                             html += '<span class="comment-date">' + formatDate(comment.publishedDate) + '</span>';
                             html += '</div>';
-                            html += '<div class="comment-content">' + escapeHtml(comment.content) + '</div>';
+                            html += '<div class="comment-content">' + linkifyPrUrls(comment.content) + '</div>';
                             html += '</div>';
                         });
 
@@ -1272,7 +1291,7 @@ export class PullRequestWebviewPanel {
                             html += '<span class="comment-author-name">' + escapeHtml(comment.author.displayName) + '</span>';
                             html += '<span class="comment-date">' + formatDate(comment.publishedDate) + '</span>';
                             html += '</div>';
-                            html += '<div class="comment-content">' + escapeHtml(comment.content) + '</div>';
+                            html += '<div class="comment-content">' + linkifyPrUrls(comment.content) + '</div>';
                             html += '</div>';
                         });
 
@@ -1424,6 +1443,13 @@ export class PullRequestWebviewPanel {
                 function escapeHtml(text) {
                     const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
                     return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+                }
+
+                function linkifyPrUrls(text) {
+                    var escaped = escapeHtml(text);
+                    return escaped.replace(/(https?:\/\/[^\s<>"]+\/pullrequest\/(\d+)[^\s<>"]*)/g, function(match) {
+                        return '<a href="' + match + '">' + match + '</a>';
+                    });
                 }
 
                 function formatDate(dateStr) {
@@ -1858,6 +1884,22 @@ export class PullRequestWebviewPanel {
 
                     // Fetch comments for the PR
                     vscode.postMessage({ command: 'fetchComments' });
+
+                    // Intercept PR links to open inside the extension
+                    if (redirectPrLinksToExtension) {
+                        document.addEventListener('click', function(e) {
+                            var link = e.target.closest('a');
+                            if (!link || !link.href || link.dataset.external) { return; }
+                            var prMatch = link.href.match(/\/pullrequest\/(\d+)/);
+                            if (prMatch) {
+                                e.preventDefault();
+                                vscode.postMessage({
+                                    command: 'openPullRequest',
+                                    pullRequestId: parseInt(prMatch[1], 10)
+                                });
+                            }
+                        });
+                    }
                 });
             </script>
         </body>
@@ -2006,6 +2048,20 @@ export class PullRequestWebviewPanel {
             "'": '&#039;'
         };
         return text.replace(/[&<>"']/g, (m) => map[m]);
+    }
+
+    private escapeHtmlAndLinkifyPrUrls(text: string): string {
+        const prUrlPattern = /(https?:\/\/[^\s<>"]+\/pullrequest\/(\d+)[^\s<>"]*)/g;
+        let result = '';
+        let lastIndex = 0;
+        let match;
+        while ((match = prUrlPattern.exec(text)) !== null) {
+            result += this.escapeHtml(text.slice(lastIndex, match.index));
+            result += `<a href="${match[1]}">${this.escapeHtml(match[1])}</a>`;
+            lastIndex = match.index + match[0].length;
+        }
+        result += this.escapeHtml(text.slice(lastIndex));
+        return result;
     }
 
     private getNonce(): string {
