@@ -106,6 +106,14 @@ Clicking **Open PR** in the notification opens the PR details panel.
 - **Notifications Enabled** (`azureDevOps.notifications.enabled`): Toggle notifications on/off (default: on)
 - **Poll Interval** (`azureDevOps.notifications.pollIntervalSeconds`): How often to check for activity in seconds (default: 60, minimum: 15)
 
+### PR Link Redirection
+
+When enabled, clicking a pull request link inside the PR detail view opens the referenced PR within the extension instead of in the browser. PR URLs in descriptions and comments are automatically made clickable.
+
+**Setting** (VS Code Settings → Azure DevOps):
+
+- **Redirect PR Links to Extension** (`azureDevOps.redirectPrLinksToExtension`): Open PR links inside the extension instead of the browser (default: on)
+
 ### Pipeline Status
 
 - Pipeline runs are shown under each PR in the tree view
