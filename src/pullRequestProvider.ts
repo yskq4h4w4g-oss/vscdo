@@ -6,8 +6,14 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
     private client: AzureDevOpsClient | undefined;
+    private userIdentity: string | undefined;
 
     constructor() {}
+
+    setUserIdentity(identity: string | undefined): void {
+        this.userIdentity = identity;
+        this.refresh();
+    }
 
     setClient(client: AzureDevOpsClient | undefined) {
         this.client = client;
@@ -30,9 +36,19 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
         try {
             if (!element) {
                 // Root level - show pull requests
-                const pullRequests = await this.client.getPullRequests('active');
+                let pullRequests = await this.client.getPullRequests('active');
 
-                if (pullRequests.length === 0) {
+                const config = vscode.workspace.getConfiguration('azureDevOps');
+                if (config.get<boolean>('filterMyPullRequests') && this.userIdentity) {
+                    const identity = this.userIdentity.toLowerCase();
+                    pullRequests = pullRequests.filter(pr =>
+                        pr.createdBy.uniqueName.toLowerCase() === identity ||
+                        pr.reviewers.some(r => r.uniqueName.toLowerCase() === identity)
+                    );
+                    if (pullRequests.length === 0) {
+                        return [new TreeItem('No pull requests match your filter', '', vscode.TreeItemCollapsibleState.None, 'info')];
+                    }
+                } else if (pullRequests.length === 0) {
                     return [new TreeItem('No active pull requests', '', vscode.TreeItemCollapsibleState.None, 'info')];
                 }
 

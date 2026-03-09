@@ -9,6 +9,8 @@ A Visual Studio Code extension for managing Azure DevOps pull requests and monit
 - **Pipeline Status**: Monitor pipeline runs associated with each pull request
 - **Detailed PR View**: View comprehensive PR details including description, metadata, and pipeline status
 - **Quick Actions**: Open PRs in browser, refresh list, and more
+- **My PRs Filter**: Filter the list to only show pull requests you created or are a reviewer on
+- **PR Notifications**: Get VS Code notifications when new comments are added or reviewers change their vote
 
 ## Prerequisites
 
@@ -80,6 +82,30 @@ Two settings are available to speed up PR creation (VS Code Settings → Azure D
 - **Prefill Source Branch** (`azureDevOps.prefillSourceBranch`): When enabled, the current active git branch is automatically moved to the top of the source branch picker.
 - **Default Target Branch** (`azureDevOps.defaultTargetBranch`): Set a branch name (e.g. `main`, `develop`) to have it moved to the top of the target branch picker by default.
 
+### Filtering Pull Requests
+
+To show only pull requests you're involved in:
+
+1. Open VS Code Settings (Ctrl+, / Cmd+,) and search for "Azure DevOps"
+2. Enable **Filter My Pull Requests** (`azureDevOps.filterMyPullRequests`)
+3. Your identity is auto-detected from your PAT. If auto-detection doesn't work, set your email manually in **User Email** (`azureDevOps.userEmail`)
+
+When enabled, the list shows only PRs where you are the author or a reviewer.
+
+### PR Notifications
+
+The extension polls Azure DevOps in the background and shows a VS Code notification when:
+
+- A new comment is added to a PR you're involved in
+- A reviewer changes their vote on a PR you're involved in
+
+Clicking **Open PR** in the notification opens the PR details panel.
+
+**Notification settings** (VS Code Settings → Azure DevOps):
+
+- **Notifications Enabled** (`azureDevOps.notifications.enabled`): Toggle notifications on/off (default: on)
+- **Poll Interval** (`azureDevOps.notifications.pollIntervalSeconds`): How often to check for activity in seconds (default: 60, minimum: 15)
+
 ### Pipeline Status
 
 - Pipeline runs are shown under each PR in the tree view
@@ -101,5 +127,4 @@ Two settings are available to speed up PR creation (VS Code Settings → Azure D
 
 ## Future Enhancements
 
-- [ ] PR review and comment functionality
-- [ ] Approve/reject PRs from VS Code
+- [ ] Configurable notification sound/badge

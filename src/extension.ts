@@ -11,6 +11,14 @@ let currentConfig: AzureDevOpsConfig | undefined;
 let secretStorage: vscode.SecretStorage;
 let extensionContext: vscode.ExtensionContext;
 
+// Notification watcher state
+type PRNotificationState = {
+    commentCount: number;
+    votes: Record<string, number>; // reviewerId -> vote
+};
+let notificationWatcherInterval: ReturnType<typeof setInterval> | undefined;
+const prNotificationStates = new Map<number, PRNotificationState>();
+
 interface GitRemoteInfo {
     organizationUrl: string;
     project: string;
@@ -226,6 +234,111 @@ function getPullRequestWebUrl(pullRequestId: number): string {
     return `${currentConfig.organizationUrl}/${currentConfig.project}/_git/${currentConfig.repository}/pullrequest/${pullRequestId}`;
 }
 
+function getVoteLabel(vote: number): string {
+    if (vote >= 10) { return 'approved'; }
+    if (vote >= 5) { return 'approved with suggestions'; }
+    if (vote === 0) { return 'reset vote'; }
+    if (vote > -10) { return 'is waiting for author'; }
+    return 'rejected';
+}
+
+function startNotificationWatcher(activeClient: AzureDevOpsClient, userIdentity: string): void {
+    stopNotificationWatcher();
+
+    const config = vscode.workspace.getConfiguration('azureDevOps');
+    const intervalSeconds = Math.max(15, config.get<number>('notifications.pollIntervalSeconds', 60));
+
+    notificationWatcherInterval = setInterval(async () => {
+        const cfg = vscode.workspace.getConfiguration('azureDevOps');
+        if (!cfg.get<boolean>('notifications.enabled', true)) {
+            return;
+        }
+
+        try {
+            const allPRs = await activeClient.getPullRequests('active');
+            const identity = userIdentity.toLowerCase();
+            const myPRs = allPRs.filter(pr =>
+                pr.createdBy.uniqueName.toLowerCase() === identity ||
+                pr.reviewers.some(r => r.uniqueName.toLowerCase() === identity)
+            );
+
+            for (const pr of myPRs) {
+                const prId = pr.pullRequestId;
+                const threads = await activeClient.getCommentThreads(prId);
+                const commentCount = threads.reduce((sum, t) =>
+                    sum + t.comments.filter(c => !c.isDeleted).length, 0);
+
+                const votes: Record<string, number> = {};
+                for (const r of pr.reviewers) {
+                    votes[r.uniqueName] = r.vote;
+                }
+
+                const prev = prNotificationStates.get(prId);
+                if (!prev) {
+                    // First time seeing this PR — establish baseline silently
+                    prNotificationStates.set(prId, { commentCount, votes });
+                    continue;
+                }
+
+                // Check for new comments
+                if (commentCount > prev.commentCount) {
+                    const msg = `New comment on PR #${prId}: ${pr.title}`;
+                    vscode.window.showInformationMessage(msg, 'Open PR').then(sel => {
+                        if (sel === 'Open PR') {
+                            vscode.commands.executeCommand('azureDevOps.viewPullRequest', pr);
+                        }
+                    });
+                }
+
+                // Check for vote changes
+                for (const [reviewerId, vote] of Object.entries(votes)) {
+                    if (prev.votes[reviewerId] !== undefined && prev.votes[reviewerId] !== vote) {
+                        const reviewer = pr.reviewers.find(r => r.uniqueName === reviewerId);
+                        const name = reviewer?.displayName || reviewerId;
+                        const msg = `${name} ${getVoteLabel(vote)} on PR #${prId}: ${pr.title}`;
+                        vscode.window.showInformationMessage(msg, 'Open PR').then(sel => {
+                            if (sel === 'Open PR') {
+                                vscode.commands.executeCommand('azureDevOps.viewPullRequest', pr);
+                            }
+                        });
+                    }
+                }
+
+                prNotificationStates.set(prId, { commentCount, votes });
+            }
+
+            // Clean up state for PRs that are no longer active
+            for (const id of prNotificationStates.keys()) {
+                if (!myPRs.find(pr => pr.pullRequestId === id)) {
+                    prNotificationStates.delete(id);
+                }
+            }
+        } catch (error) {
+            console.error('Notification watcher error:', error instanceof Error ? error.message : error);
+        }
+    }, intervalSeconds * 1000);
+}
+
+function stopNotificationWatcher(): void {
+    if (notificationWatcherInterval !== undefined) {
+        clearInterval(notificationWatcherInterval);
+        notificationWatcherInterval = undefined;
+    }
+    prNotificationStates.clear();
+}
+
+async function resolveUserIdentity(activeClient: AzureDevOpsClient): Promise<string | undefined> {
+    try {
+        const user = await activeClient.getCurrentUser();
+        if (user.uniqueName) {
+            return user.uniqueName;
+        }
+    } catch {
+        // fall through to manual setting
+    }
+    return vscode.workspace.getConfiguration('azureDevOps').get<string>('userEmail') || undefined;
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Azure DevOps extension is now active');
 
@@ -278,6 +391,22 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         })
     );
+
+    // Listen for configuration changes affecting filtering and notifications
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(async (e) => {
+            if (e.affectsConfiguration('azureDevOps.userEmail') ||
+                e.affectsConfiguration('azureDevOps.filterMyPullRequests')) {
+                if (client) {
+                    const identity = await resolveUserIdentity(client);
+                    pullRequestProvider.setUserIdentity(identity);
+                }
+            }
+        })
+    );
+
+    // Stop watcher on deactivate
+    context.subscriptions.push({ dispose: stopNotificationWatcher });
 
     // Show welcome message if PAT not configured
     const pat = await secretStorage.get(PAT_SECRET_KEY);
@@ -355,6 +484,8 @@ async function initializeClient(waitForRepo: boolean = false) {
         client = undefined;
         currentConfig = undefined;
         pullRequestProvider.setClient(undefined);
+        pullRequestProvider.setUserIdentity(undefined);
+        stopNotificationWatcher();
         console.log('Azure DevOps PAT not configured');
         return;
     }
@@ -366,6 +497,8 @@ async function initializeClient(waitForRepo: boolean = false) {
         client = undefined;
         currentConfig = undefined;
         pullRequestProvider.setClient(undefined);
+        pullRequestProvider.setUserIdentity(undefined);
+        stopNotificationWatcher();
         console.log('Could not detect Azure DevOps repository from workspace');
         return;
     }
@@ -382,12 +515,23 @@ async function initializeClient(waitForRepo: boolean = false) {
         currentConfig = azureConfig;
         pullRequestProvider.setClient(client);
         console.log(`Azure DevOps client initialized for ${detectedInfo.project}/${detectedInfo.repository}`);
+
+        // Resolve user identity for filtering and notifications
+        const identity = await resolveUserIdentity(client);
+        pullRequestProvider.setUserIdentity(identity);
+
+        // Start notification watcher if identity is known
+        if (identity) {
+            startNotificationWatcher(client, identity);
+        }
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         vscode.window.showErrorMessage(`Failed to initialize Azure DevOps client: ${errorMessage}`);
         client = undefined;
         currentConfig = undefined;
         pullRequestProvider.setClient(undefined);
+        pullRequestProvider.setUserIdentity(undefined);
+        stopNotificationWatcher();
     }
 }
 
