@@ -12,6 +12,7 @@ export class PullRequestWebviewPanel {
     private targetRef: string = '';
     private currentUser: CurrentUser | undefined;
     private commentThreads: CommentThread[] = [];
+    private _updating: boolean = false;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -66,6 +67,7 @@ export class PullRequestWebviewPanel {
                             this.panel.webview.postMessage({
                                 command: 'diffLoaded',
                                 index: message.index,
+                                prId: message.prId,
                                 diff: {
                                     originalContent: diff.originalContent,
                                     modifiedContent: diff.modifiedContent
@@ -76,6 +78,7 @@ export class PullRequestWebviewPanel {
                             this.panel.webview.postMessage({
                                 command: 'diffError',
                                 index: message.index,
+                                prId: message.prId,
                                 error: errorMessage
                             });
                         }
@@ -315,6 +318,8 @@ export class PullRequestWebviewPanel {
     }
 
     private async update() {
+        if (this._updating) { return; }
+        this._updating = true;
         const webview = this.panel.webview;
         this.panel.title = `PR #${this.pullRequest.pullRequestId}`;
 
@@ -336,6 +341,8 @@ export class PullRequestWebviewPanel {
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             webview.html = this.getErrorHtml(errorMessage);
+        } finally {
+            this._updating = false;
         }
     }
 
@@ -1124,6 +1131,7 @@ export class PullRequestWebviewPanel {
             <script nonce="${nonce}">
                 const vscode = acquireVsCodeApi();
                 const redirectPrLinksToExtension = ${redirectPrLinks};
+                const currentPrId = ${pr.pullRequestId};
                 const fileData = ${JSON.stringify(fileData)};
                 const editors = {};
                 const pendingLoads = {};
@@ -1168,6 +1176,7 @@ export class PullRequestWebviewPanel {
                     vscode.postMessage({
                         command: 'fetchDiff',
                         index: index,
+                        prId: currentPrId,
                         filePath: data.path,
                         changeType: data.changeType
                     });
@@ -1490,7 +1499,9 @@ export class PullRequestWebviewPanel {
                     const message = event.data;
                     switch (message.command) {
                         case 'diffLoaded': {
+                            if (message.prId !== currentPrId) { break; }
                             const index = message.index;
+                            if (!fileData[index]) { break; }
                             fileData[index].originalContent = message.diff.originalContent;
                             fileData[index].modifiedContent = message.diff.modifiedContent;
                             fileData[index].loaded = true;
@@ -1499,7 +1510,9 @@ export class PullRequestWebviewPanel {
                             break;
                         }
                         case 'diffError': {
+                            if (message.prId !== currentPrId) { break; }
                             const errorIndex = message.index;
+                            if (!fileData[errorIndex]) { break; }
                             delete pendingLoads[errorIndex];
                             const errorContainer = document.getElementById(fileData[errorIndex].id);
                             if (errorContainer) {
@@ -2009,7 +2022,7 @@ export class PullRequestWebviewPanel {
                 Started: ${new Date(pipeline.createdDate).toLocaleString()}
                 ${pipeline.finishedDate ? `<br>Finished: ${new Date(pipeline.finishedDate).toLocaleString()}` : ''}
             </div>
-            <a href="${pipeline.url}" class="button">View Pipeline</a>
+            <a href="${pipeline.url}" class="button" data-external="true">View Pipeline</a>
         </div>`;
     }
 
@@ -2035,7 +2048,7 @@ export class PullRequestWebviewPanel {
                 Started: ${new Date(pipeline.createdDate).toLocaleString()}
                 ${pipeline.finishedDate ? `<br>Finished: ${new Date(pipeline.finishedDate).toLocaleString()}` : ''}
             </div>
-            <a href="${pipeline.url}" class="button">View Pipeline</a>
+            <a href="${pipeline.url}" class="button" data-external="true">View Pipeline</a>
         </div>`;
     }
 
